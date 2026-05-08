@@ -16,6 +16,7 @@ use tinyharness_lib::{
         ContextWindowSize, check_context_warning, estimate_conversation_tokens, estimate_tokens,
         format_token_count,
     },
+    tools::SignalEvent,
     tools::ToolManager,
 };
 
@@ -482,29 +483,43 @@ async fn handle_tool_calls<W: Write>(
             continue;
         }
 
-        // Special handling: switch_mode tool performs an actual mode switch through the dispatcher.
-        if call.function.name == "switch_mode" {
-            handle_switch_mode(call, dispatcher, messages, session, stdout)?;
-            continue;
-        }
-
-        // Special handling: question tool prompts the user for an answer interactively.
-        if call.function.name == "question" {
-            handle_question(call, messages, session, stdout)?;
-            continue;
-        }
-
-        // Special handling: auto_compact tool triggers conversation compaction.
-        if call.function.name == "auto_compact" {
-            handle_auto_compact(
-                call,
-                dispatcher,
-                messages,
-                session,
-                stdout,
-                Arc::clone(&provider),
-            )
-            .await?;
+        // Signal tools are handled specially by the agent loop — they don't
+        // go through generic execution. Parse the call into a structured
+        // SignalEvent and dispatch accordingly.
+        if tool_manager.is_signal_tool(&call.function.name) {
+            if let Some(event) =
+                tool_manager.parse_signal_event(&call.function.name, &call.function.arguments)
+            {
+                match event {
+                    SignalEvent::SwitchMode { mode } => {
+                        handle_switch_mode(mode, dispatcher, messages, session, stdout)?;
+                    }
+                    SignalEvent::Question { question, answers } => {
+                        handle_question(&question, &answers, messages, session, stdout)?;
+                    }
+                    SignalEvent::AutoCompact { focus } => {
+                        handle_auto_compact(
+                            &focus,
+                            messages,
+                            session,
+                            stdout,
+                            Arc::clone(&provider),
+                        )
+                        .await?;
+                    }
+                }
+            } else {
+                // Failed to parse signal arguments — record an error message.
+                messages.push(Message {
+                    role: Role::Tool,
+                    content: format!(
+                        "Error: Could not parse arguments for signal tool '{}'.",
+                        call.function.name
+                    ),
+                    tool_calls: vec![],
+                });
+                session.append_message(messages.last().unwrap());
+            }
             continue;
         }
 
@@ -618,75 +633,41 @@ async fn execute_generic_tool<W: Write>(
     session.append_message(messages.last().unwrap());
 }
 
-/// Handle the switch_mode tool: parse mode, update dispatcher, and update system prompt.
+/// Handle the switch_mode signal: update dispatcher and system prompt.
 fn handle_switch_mode<W: Write>(
-    call: &ToolCall,
+    new_mode: AgentMode,
     dispatcher: &mut CommandDispatcher,
     messages: &mut Vec<Message>,
     session: &mut Session,
     stdout: &mut W,
 ) -> Result<(), Box<dyn Error>> {
-    let mode_str = call
-        .function
-        .arguments
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let old_mode = dispatcher.current_mode;
+    match dispatcher.switch_mode(new_mode, messages) {
+        Ok(()) => {
+            session.set_mode(new_mode);
 
-    if mode_str.is_empty() {
-        messages.push(Message {
-            role: Role::Tool,
-            content: "Error: 'mode' argument is required for switch_mode. Valid values: casual, planning, agent, research".to_string(),
-            tool_calls: vec![],
-        });
-        session.append_message(messages.last().unwrap());
-        return Ok(());
-    }
+            writeln!(
+                stdout,
+                "\n{}{}🔄 Mode switched: {} → {}{}",
+                BOLD, BLUE, old_mode, new_mode, RESET
+            )?;
+            stdout.flush()?;
 
-    match mode_str.parse::<AgentMode>() {
-        Ok(new_mode) => {
-            let old_mode = dispatcher.current_mode;
-            match dispatcher.switch_mode(new_mode, messages) {
-                Ok(()) => {
-                    session.set_mode(new_mode);
-
-                    writeln!(
-                        stdout,
-                        "\n{}{}🔄 Mode switched: {} → {}{}",
-                        BOLD, BLUE, old_mode, new_mode, RESET
-                    )?;
-                    stdout.flush()?;
-
-                    messages.push(Message {
-                        role: Role::Tool,
-                        content: format!(
-                            "SUCCESS: Mode switched from '{}' to '{}'. The assistant is now in {} mode and will use the appropriate toolset and behavior.",
-                            old_mode, new_mode, new_mode
-                        ),
-                        tool_calls: vec![],
-                    });
-                    session.append_message(messages.last().unwrap());
-                }
-                Err(msg) => {
-                    writeln!(stdout, "  {}{}{}", ORANGE, msg, RESET)?;
-                    messages.push(Message {
-                        role: Role::Tool,
-                        content: format!("Already in '{}' mode. No change was made.", new_mode),
-                        tool_calls: vec![],
-                    });
-                    session.append_message(messages.last().unwrap());
-                }
-            }
-        }
-        Err(e) => {
-            writeln!(stdout, "  {}Error: {}{}", RED, e, RESET)?;
             messages.push(Message {
                 role: Role::Tool,
                 content: format!(
-                    "Error: {}. Valid modes: casual, planning, agent, research",
-                    e
+                    "SUCCESS: Mode switched from '{}' to '{}'. The assistant is now in {} mode and will use the appropriate toolset and behavior.",
+                    old_mode, new_mode, new_mode
                 ),
+                tool_calls: vec![],
+            });
+            session.append_message(messages.last().unwrap());
+        }
+        Err(msg) => {
+            writeln!(stdout, "  {}{}{}", ORANGE, msg, RESET)?;
+            messages.push(Message {
+                role: Role::Tool,
+                content: format!("Already in '{}' mode. No change was made.", new_mode),
                 tool_calls: vec![],
             });
             session.append_message(messages.last().unwrap());
@@ -695,34 +676,14 @@ fn handle_switch_mode<W: Write>(
     Ok(())
 }
 
-/// Handle the question tool: display options and prompt user for a choice.
+/// Handle the question signal: display options and prompt user for a choice.
 fn handle_question<W: Write>(
-    call: &ToolCall,
+    question_text: &str,
+    answers: &[String],
     messages: &mut Vec<Message>,
     session: &mut Session,
     stdout: &mut W,
 ) -> Result<(), Box<dyn Error>> {
-    let question_text = call
-        .function
-        .arguments
-        .get("question")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    let answers: Vec<String> = call
-        .function
-        .arguments
-        .get("answers")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
     if question_text.is_empty() {
         messages.push(Message {
             role: Role::Tool,
@@ -818,23 +779,14 @@ fn handle_question<W: Write>(
     Ok(())
 }
 
-/// Handle the auto_compact tool: trigger conversation compaction.
+/// Handle the auto_compact signal: trigger conversation compaction.
 async fn handle_auto_compact<W: Write>(
-    call: &ToolCall,
-    _dispatcher: &mut CommandDispatcher,
+    focus: &str,
     messages: &mut Vec<Message>,
     session: &mut Session,
     stdout: &mut W,
     provider: Arc<Mutex<dyn Provider + Send + Sync>>,
 ) -> Result<(), Box<dyn Error>> {
-    let focus = call
-        .function
-        .arguments
-        .get("focus")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
     writeln!(
         stdout,
         "\n{}  {}▶ auto_compact{} Compacting conversation history...",
@@ -845,7 +797,7 @@ async fn handle_auto_compact<W: Write>(
     // Lock the provider and perform compaction
     let mut provider_guard = provider.lock().await;
 
-    match execute_compact(&mut *provider_guard, messages, &focus).await {
+    match execute_compact(&mut *provider_guard, messages, focus).await {
         Ok(()) => {
             // Compaction successful
             messages.push(Message {
@@ -855,7 +807,7 @@ async fn handle_auto_compact<W: Write>(
                     if focus.is_empty() {
                         "general summary"
                     } else {
-                        &focus
+                        focus
                     }
                 ),
                 tool_calls: vec![],

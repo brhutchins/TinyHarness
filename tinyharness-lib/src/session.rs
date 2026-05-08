@@ -115,7 +115,7 @@ impl SessionStore {
     }
 
     /// Ensure the session directory exists.
-    fn ensure_dir(&self) -> Result<(), SessionError> {
+    pub fn ensure_dir(&self) -> Result<(), SessionError> {
         fs::create_dir_all(&self.dir)?;
         Ok(())
     }
@@ -153,7 +153,6 @@ impl SessionStore {
         let mut session = Session {
             meta: meta.clone(),
             path: self.dir.join(format!("{}.jsonl", meta.id)),
-            store: Some(self.clone_store()),
             dirty: true,
             messages_since_save: 0,
             created: false,
@@ -206,7 +205,6 @@ impl SessionStore {
         let session = Session {
             meta: meta.clone(),
             path,
-            store: Some(self.clone_store()),
             dirty: false,
             messages_since_save: 0,
             created: true,
@@ -304,14 +302,6 @@ impl SessionStore {
     pub fn dir(&self) -> &PathBuf {
         &self.dir
     }
-
-    /// Clone the store handle (needed because SessionStore is not Clone).
-    /// Uses the same directory path.
-    fn clone_store(&self) -> SessionStore {
-        SessionStore {
-            dir: self.dir.clone(),
-        }
-    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -346,7 +336,6 @@ fn read_session_meta(path: &PathBuf) -> Option<SessionMeta> {
 pub struct Session {
     meta: SessionMeta,
     path: PathBuf,
-    store: Option<SessionStore>,
     dirty: bool,
     messages_since_save: usize,
     created: bool,
@@ -497,15 +486,11 @@ impl Session {
         }
 
         // Ensure directory exists
-        if let Some(store) = &self.store {
-            let _ = store.ensure_dir();
-        } else {
-            let _ = fs::create_dir_all(
-                self.path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new(".")),
-            );
-        }
+        let _ = fs::create_dir_all(
+            self.path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+        );
 
         self.write_entry(&SessionEntry::Meta(self.meta.clone()));
         self.created = true;

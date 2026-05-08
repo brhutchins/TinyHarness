@@ -132,32 +132,59 @@ impl ToolManager {
             .unwrap_or(false)
     }
 
-    /// Returns only read-only tools (ls, read, grep, glob) — no write/edit/run.
-    /// Also includes signal tools so planning/research modes can escalate.
-    #[deprecated(note = "Use tools_for_mode() instead")]
-    pub fn get_readonly_tools(&self) -> Vec<ToolDefinition> {
-        self.tools
-            .iter()
-            .filter(|t| t.category == ToolCategory::ReadOnly || t.category == ToolCategory::Signal)
-            .map(|t| t.tool_info.clone())
-            .collect()
+    /// Returns `true` if the tool is a signal tool (switch_mode, question, auto_compact).
+    /// Signal tools are handled specially by the agent loop rather than executed generically.
+    pub fn is_signal_tool(&self, tool_name: &str) -> bool {
+        self.category_of(tool_name) == Some(ToolCategory::Signal)
     }
 
-    /// Returns research tools (read-only + web search/fetch, no write/edit/run).
-    /// Also includes signal tools so research mode can escalate.
-    #[deprecated(note = "Use tools_for_mode() instead")]
-    pub fn get_research_tools(&self) -> Vec<ToolDefinition> {
-        self.tools
-            .iter()
-            .filter(|t| t.category == ToolCategory::ReadOnly || t.category == ToolCategory::Signal)
-            .map(|t| t.tool_info.clone())
-            .collect()
-    }
-
-    /// Returns all tool definitions.
-    #[deprecated(note = "Use get_all_tool_definitions() instead")]
-    pub fn get_ollama_tools(&self) -> Vec<ToolDefinition> {
-        self.get_all_tool_definitions()
+    /// Parse a signal tool's result string into a structured `SignalEvent`.
+    ///
+    /// Signal tools return plain strings, but the agent loop needs structured
+    /// data to dispatch them correctly. This method interprets the tool call
+    /// arguments (not the result string) to produce the appropriate event.
+    ///
+    /// Returns `None` if the tool is not a signal tool or the arguments are invalid.
+    pub fn parse_signal_event(
+        &self,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> Option<SignalEvent> {
+        match tool_name {
+            "switch_mode" => {
+                let mode_str = arguments.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+                mode_str
+                    .parse::<AgentMode>()
+                    .ok()
+                    .map(|mode| SignalEvent::SwitchMode { mode })
+            }
+            "question" => {
+                let question = arguments
+                    .get("question")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let answers: Vec<String> = arguments
+                    .get("answers")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(SignalEvent::Question { question, answers })
+            }
+            "auto_compact" => {
+                let focus = arguments
+                    .get("focus")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some(SignalEvent::AutoCompact { focus })
+            }
+            _ => None,
+        }
     }
 
     pub async fn execute_tool_call(
