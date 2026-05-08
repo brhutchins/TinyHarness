@@ -8,10 +8,10 @@ use rustyline::Editor;
 use tokio::sync::Mutex;
 
 use tinyharness_lib::{
-    config::Settings,
+    config::load_settings,
     mode::AgentMode,
-    provider::{Message, Provider, Role, TokenUsage, ToolCall, ToolDefinition},
-    session::Session,
+    provider::{Message, Provider, Role, TokenUsage, ToolCall},
+    session::{Session, SessionStore},
     token::{
         ContextWindowSize, check_context_warning, estimate_conversation_tokens, estimate_tokens,
         format_token_count,
@@ -30,7 +30,6 @@ use crate::{
 pub async fn run_agent_loop(
     provider: Arc<Mutex<dyn Provider + Send + Sync>>,
     tool_manager: ToolManager,
-    all_tools: Vec<ToolDefinition>,
     messages: &mut Vec<Message>,
     dispatcher: &mut CommandDispatcher,
     session: &mut Session,
@@ -133,11 +132,12 @@ pub async fn run_agent_loop(
                     match dispatcher.dispatch(cmd, messages).await {
                         Ok(CommandResult::Ok) => {}
                         Ok(CommandResult::SwitchSession(id_prefix)) => {
-                            match Session::find_by_prefix(&id_prefix) {
+                            let store = SessionStore::default_path();
+                            match store.find_by_prefix(&id_prefix) {
                                 Ok(full_id) => {
                                     // Flush current session before switching
                                     session.flush();
-                                    match Session::load(&full_id) {
+                                    match store.load(&full_id) {
                                         Ok((new_session, loaded_msgs)) => {
                                             let meta = new_session.meta();
                                             let name = meta.name.as_deref().unwrap_or("unnamed");
@@ -234,12 +234,7 @@ pub async fn run_agent_loop(
 
         loop {
             // Filter tools based on current mode
-            let tools = match dispatcher.current_mode {
-                AgentMode::Agent => all_tools.clone(),
-                AgentMode::Planning => tool_manager.tools_for_mode(AgentMode::Planning),
-                AgentMode::Casual => Vec::new(),
-                AgentMode::Research => tool_manager.tools_for_mode(AgentMode::Research),
-            };
+            let tools = tool_manager.tools_for_mode(dispatcher.current_mode);
 
             // Call the provider — it returns a receiver for streaming chunks
             let mut recv = {
@@ -359,7 +354,7 @@ pub async fn run_agent_loop(
         let estimated_total = estimate_conversation_tokens(messages);
 
         // Use configured context limit for warnings, or fall back to default
-        let settings = Settings::load();
+        let settings = load_settings();
         let context_size = settings
             .context_limit
             .map(ContextWindowSize::Custom)

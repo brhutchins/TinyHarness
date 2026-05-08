@@ -182,25 +182,6 @@ impl SettingsStore {
     }
 }
 
-// ── Backward-compatible convenience methods on Settings ────────────────────
-
-impl Settings {
-    /// Load settings from the default path, returning defaults on any error.
-    ///
-    /// Convenience method that delegates to [`SettingsStore::default_path().load_or_default()`].
-    pub fn load() -> Self {
-        load_settings()
-    }
-
-    /// Save settings to the default path atomically.
-    ///
-    /// On error, prints a warning to stderr.
-    /// Convenience method that delegates to [`save_settings`].
-    pub fn save(&self) {
-        save_settings(self);
-    }
-}
-
 // ── Free convenience functions ─────────────────────────────────────────────
 
 /// Load settings from the default path, returning defaults on any error.

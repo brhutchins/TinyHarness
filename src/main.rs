@@ -6,14 +6,14 @@ pub mod ui;
 use std::{error::Error, sync::Arc};
 
 use tinyharness_lib::{
-    config::{ProviderKind, Settings},
+    config::{ProviderKind, Settings, load_settings, save_settings},
     context::WorkspaceContext,
     mode::AgentMode,
     provider::{
         Message, Provider, Role, llama_cpp::LlamaCppProvider, ollama::OllamaProvider,
         vllm::VllmProvider,
     },
-    session::Session,
+    session::{Session, SessionStore},
     tools::ToolManager,
 };
 
@@ -143,7 +143,8 @@ fn create_initial_session(
     current_model: Option<String>,
     workspace_ctx: &WorkspaceContext,
 ) -> (Session, Vec<Message>) {
-    let sess = Session::new(working_dir, initial_mode, provider_str, current_model);
+    let sess =
+        SessionStore::default_path().create(working_dir, initial_mode, provider_str, current_model);
     let system_prompt = format!(
         "{}\n\n---\n{}",
         initial_mode.system_prompt(),
@@ -162,7 +163,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     // Load saved settings (will be used as defaults when no CLI flags are given)
-    let settings = Settings::load();
+    let settings = load_settings();
 
     // Determine which provider to use: CLI flags override saved settings
     let provider_kind = resolve_provider_kind(&args, &settings);
@@ -184,13 +185,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut settings = settings;
     if settings.last_provider != provider_kind {
         settings.last_provider = provider_kind;
-        settings.save();
+        save_settings(&settings);
     }
 
     let mut tool_manager = ToolManager::new();
     tool_manager.register_defaults();
-
-    let all_tools = tool_manager.get_all_tool_definitions();
 
     // Collect workspace context and build the system prompt with the saved mode
     let workspace_ctx = WorkspaceContext::collect();
@@ -211,8 +210,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .to_string();
 
     let (mut session, mut messages) = if args.r#continue {
-        match Session::find_latest_for_dir(&working_dir) {
-            Some(session_id) => match Session::load(&session_id) {
+        let store = SessionStore::default_path();
+        match store.find_latest_for_dir(&working_dir) {
+            Some(session_id) => match store.load(&session_id) {
                 Ok((sess, loaded_msgs)) => {
                     let meta = sess.meta();
                     let name = meta.name.as_deref().unwrap_or("unnamed");
@@ -266,7 +266,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     run_agent_loop(
         provider,
         tool_manager,
-        all_tools,
         &mut messages,
         &mut dispatcher,
         &mut session,

@@ -7,7 +7,9 @@ pub mod token;
 pub mod tools;
 
 // Re-export key types at crate root for convenience
-pub use config::{ProviderKind, Settings, SettingsError, SettingsStore};
+pub use config::{
+    ProviderKind, Settings, SettingsError, SettingsStore, load_settings, save_settings,
+};
 pub use context::WorkspaceContext;
 pub use mode::AgentMode;
 pub use provider::{

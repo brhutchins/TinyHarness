@@ -141,7 +141,24 @@ impl Provider for OllamaProvider {
     ) -> tokio::sync::mpsc::Receiver<ChatMessageResponse> {
         let (send, recv) = tokio::sync::mpsc::channel::<ChatMessageResponse>(1024);
 
-        let model = self.model.clone().expect("Model not set");
+        let model = match self.model.clone() {
+            Some(m) => m,
+            None => {
+                let _ = send
+                    .send(ChatMessageResponse {
+                        message: ChatMessage {
+                            content: "Error: No model selected. Use /model <name> to select one."
+                                .to_string(),
+                            tool_calls: vec![],
+                        },
+                        done: true,
+                        is_error: true,
+                        usage: None,
+                    })
+                    .await;
+                return recv;
+            }
+        };
         let timeout_secs = self.timeout_secs;
         let max_retries = self.max_retries;
         let client = self.client.clone();

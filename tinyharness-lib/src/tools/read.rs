@@ -60,8 +60,8 @@ define_tool!(
      ToolCategory::ReadOnly,
     required: [("path", "The absolute path to the file to read")],
     optional: [
-        ("from", "Starting line number (0-based, optional)", "0"),
-        ("to", "Number of lines to read (optional, reads entire file if omitted)", ""),
+        ("from", "Starting line number (0-based, inclusive)", "0"),
+        ("to", "Number of lines to read (if from is set, reads this many lines)", ""),
     ],
     handler: read_tool
 );

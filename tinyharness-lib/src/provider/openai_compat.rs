@@ -167,9 +167,8 @@ pub struct OpenAIToolCallFunction {
 #[derive(Deserialize)]
 pub struct ChunkChoice {
     pub delta: Delta,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub finish_reason: Option<String>,
+    #[serde(default, rename = "finish_reason")]
+    pub _finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Default)]

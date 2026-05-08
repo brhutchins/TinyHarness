@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use crate::config::Settings;
+use crate::config::load_settings;
 use crate::define_tool;
 use crate::extract_args;
 use crate::tools::tool::{BoxFuture, ToolCategory};
 
 /// Load the Ollama API key from settings, returning an error string if not set.
 fn get_api_key() -> Result<String, String> {
-    let settings = Settings::load();
+    let settings = load_settings();
     settings
         .ollama_api_key
         .ok_or_else(|| "Error: No Ollama API key set. Use /apikey <key> to set one.".to_string())

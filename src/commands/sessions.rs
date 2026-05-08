@@ -1,4 +1,4 @@
-use tinyharness_lib::session::{Session, SessionMeta, format_age};
+use tinyharness_lib::session::{SessionMeta, SessionStore, format_age};
 
 use crate::style::*;
 
@@ -61,7 +61,7 @@ fn format_session_list(sessions: &[SessionMeta], current_id: Option<&str>) -> St
 }
 
 pub fn execute_list(current_session_id: Option<&str>) {
-    let sessions = Session::list_all();
+    let sessions = SessionStore::default_path().list_all();
     let output = format_session_list(&sessions, current_session_id);
     println!("{}", output);
 }

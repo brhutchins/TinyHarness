@@ -3,14 +3,18 @@ use crate::provider::Message;
 const AVG_TOKENS_PER_WORD: f64 = 1.3;
 const AVG_CHARS_PER_TOKEN: f64 = 4.0;
 
+/// A token usage estimate produced by local estimation (not from a provider).
+///
+/// For actual token usage reported by the LLM provider, see
+/// [`crate::provider::TokenUsage`].
 #[derive(Debug, Clone, Default)]
-pub struct TokenUsage {
+pub struct TokenEstimate {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
 }
 
-impl TokenUsage {
+impl TokenEstimate {
     pub fn new(prompt_tokens: u32, completion_tokens: u32) -> Self {
         Self {
             prompt_tokens,
@@ -194,8 +198,8 @@ mod tests {
     }
 
     #[test]
-    fn test_token_usage() {
-        let usage = TokenUsage::new(100, 50);
+    fn test_token_estimate() {
+        let usage = TokenEstimate::new(100, 50);
         assert_eq!(usage.prompt_tokens, 100);
         assert_eq!(usage.completion_tokens, 50);
         assert_eq!(usage.total_tokens, 150);

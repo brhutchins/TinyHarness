@@ -345,40 +345,6 @@ pub struct Session {
 const AUTO_SAVE_INTERVAL: usize = 5;
 
 impl Session {
-    /// Create a brand-new session using the default session directory.
-    /// The session file is lazily created on first message append.
-    ///
-    /// For more control, use [`SessionStore::create`].
-    pub fn new(working_dir: &str, mode: AgentMode, provider: &str, model: Option<String>) -> Self {
-        let store = SessionStore::default_path();
-        store.create(working_dir, mode, provider, model)
-    }
-
-    /// Load an existing session from its JSONL file using the default directory.
-    ///
-    /// For more control, use [`SessionStore::load`].
-    pub fn load(session_id: &str) -> Result<(Self, Vec<Message>), String> {
-        let store = SessionStore::default_path();
-        store.load(session_id).map_err(|e| e.to_string())
-    }
-
-    /// Find the most recent session for a given working directory.
-    pub fn find_latest_for_dir(working_dir: &str) -> Option<String> {
-        SessionStore::default_path().find_latest_for_dir(working_dir)
-    }
-
-    /// Find a session by an ID prefix using the default directory.
-    pub fn find_by_prefix(prefix: &str) -> Result<String, String> {
-        SessionStore::default_path()
-            .find_by_prefix(prefix)
-            .map_err(|e| e.to_string())
-    }
-
-    /// List all sessions using the default directory.
-    pub fn list_all() -> Vec<SessionMeta> {
-        SessionStore::default_path().list_all()
-    }
-
     // ── Mutating operations ────────────────────────────────────────────
 
     /// Append a message to the session file and update metadata.
