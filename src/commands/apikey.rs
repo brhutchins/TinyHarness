@@ -1,15 +1,16 @@
-use crate::config::Settings;
+use tinyharness_lib::config::{load_settings, save_settings};
+
 use crate::style::*;
 
 pub fn execute_set(key: &str) {
-    let mut settings = Settings::load();
+    let mut settings = load_settings();
     settings.ollama_api_key = Some(key.to_string());
-    settings.save();
+    save_settings(&settings);
     println!("{}Ollama API key saved.{}", BOLD, RESET);
 }
 
 pub fn execute_show() {
-    let settings = Settings::load();
+    let settings = load_settings();
     match &settings.ollama_api_key {
         Some(key) => {
             let masked = if key.len() > 8 {
@@ -27,8 +28,8 @@ pub fn execute_show() {
 }
 
 pub fn execute_clear() {
-    let mut settings = Settings::load();
+    let mut settings = load_settings();
     settings.ollama_api_key = None;
-    settings.save();
+    save_settings(&settings);
     println!("{}Ollama API key cleared.{}", BOLD, RESET);
 }

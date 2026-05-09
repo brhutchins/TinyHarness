@@ -1,28 +1,27 @@
 pub mod agent;
 pub mod commands;
-pub mod config;
-pub mod context;
-pub mod mode;
-pub mod provider;
-pub mod session;
 pub mod style;
-pub mod token;
-pub mod tools;
 pub mod ui;
 
-use std::{error::Error, sync::Arc};
+use std::{
+    error::Error,
+    sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
-use crate::{
-    agent::run_agent_loop,
-    commands::CommandDispatcher,
-    config::{ProviderKind, Settings},
+use tinyharness_lib::{
+    config::{ProviderKind, Settings, load_settings, save_settings},
+    context::WorkspaceContext,
+    mode::AgentMode,
     provider::{
         Message, Provider, Role, llama_cpp::LlamaCppProvider, ollama::OllamaProvider,
         vllm::VllmProvider,
     },
-    session::Session,
+    session::{Session, SessionStore},
     tools::ToolManager,
 };
+
+use crate::{agent::run_agent_loop, commands::CommandDispatcher};
 use clap::Parser;
 use style::*;
 use tokio::sync::Mutex;
@@ -143,12 +142,13 @@ async fn auto_select_model(provider: &mut dyn Provider, saved_model: Option<&Str
 /// Create a brand-new session with an initial system prompt message.
 fn create_initial_session(
     working_dir: &str,
-    initial_mode: crate::mode::AgentMode,
+    initial_mode: AgentMode,
     provider_str: &str,
     current_model: Option<String>,
-    workspace_ctx: &crate::context::WorkspaceContext,
+    workspace_ctx: &WorkspaceContext,
 ) -> (Session, Vec<Message>) {
-    let sess = Session::new(working_dir, initial_mode, provider_str, current_model);
+    let sess =
+        SessionStore::default_path().create(working_dir, initial_mode, provider_str, current_model);
     let system_prompt = format!(
         "{}\n\n---\n{}",
         initial_mode.system_prompt(),
@@ -164,10 +164,21 @@ fn create_initial_session(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Install Ctrl+C handler: set an atomic flag that the agent loop checks
+    // during streaming generation. This allows interrupting LLM responses
+    // without terminating the process.
+    let interrupted = Arc::new(AtomicBool::new(false));
+    ctrlc::set_handler({
+        let interrupted = Arc::clone(&interrupted);
+        move || {
+            interrupted.store(true, Ordering::SeqCst);
+        }
+    })?;
+
     let args = Args::parse();
 
     // Load saved settings (will be used as defaults when no CLI flags are given)
-    let settings = Settings::load();
+    let settings = load_settings();
 
     // Determine which provider to use: CLI flags override saved settings
     let provider_kind = resolve_provider_kind(&args, &settings);
@@ -189,16 +200,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut settings = settings;
     if settings.last_provider != provider_kind {
         settings.last_provider = provider_kind;
-        settings.save();
+        save_settings(&settings);
     }
 
     let mut tool_manager = ToolManager::new();
     tool_manager.register_defaults();
 
-    let ollama_tools = tool_manager.get_ollama_tools();
-
     // Collect workspace context and build the system prompt with the saved mode
-    let workspace_ctx = context::WorkspaceContext::collect();
+    let workspace_ctx = WorkspaceContext::collect();
     let initial_mode = settings.preferred_mode;
 
     let provider_str = provider_kind.to_string();
@@ -216,8 +225,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .to_string();
 
     let (mut session, mut messages) = if args.r#continue {
-        match Session::find_latest_for_dir(&working_dir) {
-            Some(session_id) => match Session::load(&session_id) {
+        let store = SessionStore::default_path();
+        match store.find_latest_for_dir(&working_dir) {
+            Some(session_id) => match store.load(&session_id) {
                 Ok((sess, loaded_msgs)) => {
                     let meta = sess.meta();
                     let name = meta.name.as_deref().unwrap_or("unnamed");
@@ -271,10 +281,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     run_agent_loop(
         provider,
         tool_manager,
-        ollama_tools,
         &mut messages,
         &mut dispatcher,
         &mut session,
+        &interrupted,
     )
     .await
 }

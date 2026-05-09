@@ -1,37 +1,126 @@
 use std::{
     error::Error,
     io::{self, Write},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use rustyline::Editor;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 
-use crate::{
-    commands::{CommandDispatcher, CommandResult, compact::execute_compact, init},
+use tinyharness_lib::{
+    config::load_settings,
     mode::AgentMode,
-    provider::{ChatMessageResponse, Message, Provider, Role, ToolCall, ToolInfo},
-    session::Session,
+    provider::{Message, Provider, Role, TokenUsage, ToolCall},
+    session::{Session, SessionStore},
     token::{
         ContextWindowSize, check_context_warning, estimate_conversation_tokens, estimate_tokens,
         format_token_count,
     },
+    tools::SignalEvent,
     tools::ToolManager,
+};
+
+use crate::style::*;
+use crate::{
+    commands::{CommandDispatcher, CommandResult, compact::execute_compact, init},
     ui::confirm::prompt_tool_confirmation,
     ui::input::CommandHelper,
 };
-use crate::{provider::TokenUsage, style::*};
+
+/// Read input from the user with support for multi-line continuation.
+///
+/// Uses rustyline's validator to detect incomplete input (trailing backslash,
+/// unclosed code fences, etc.) and shows a continuation prompt for additional lines.
+///
+/// Returns:
+/// - `Ok(Some(String))` - Complete input received
+/// - `Ok(None)` - EOF (Ctrl+D) or unrecoverable error
+/// - `Err(...)` - Read error
+fn read_multiline_input<W: Write>(
+    rl: &mut Editor<CommandHelper, rustyline::history::DefaultHistory>,
+    prompt: &str,
+    continuation_prompt: &str,
+    interrupted: &Arc<AtomicBool>,
+    stdout: &mut W,
+) -> Result<Option<String>, Box<dyn Error>> {
+    let mut input = String::new();
+    let mut is_first_line = true;
+
+    loop {
+        let current_prompt = if is_first_line {
+            prompt
+        } else {
+            continuation_prompt
+        };
+
+        let readline = rl.readline(current_prompt);
+
+        match readline {
+            Ok(line) => {
+                if is_first_line {
+                    input = line;
+                } else {
+                    // Append continuation line with newline
+                    input.push('\n');
+                    input.push_str(&line);
+                }
+
+                // Check if the validator considers this complete
+                // We need to manually check since rustyline handles this internally
+                let trimmed = input.trim_end();
+                let ends_with_backslash = trimmed.ends_with('\\');
+                let fence_count = input.matches("```").count();
+                let has_unclosed_fence = fence_count % 2 == 1;
+                let backtick_count = input.matches('`').count();
+                let has_unclosed_backtick = backtick_count % 2 == 1;
+
+                if ends_with_backslash || has_unclosed_fence || has_unclosed_backtick {
+                    // Incomplete - continue reading
+                    is_first_line = false;
+                    continue;
+                }
+
+                // Complete input
+                return Ok(Some(input));
+            }
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                // Ctrl+C during input — just clear the flag (set by our handler)
+                // and show a hint. Don't exit the program.
+                interrupted.store(false, Ordering::SeqCst);
+                stdout.write_all("\n".as_bytes())?;
+                stdout.write_all(
+                    format!(
+                        "{}Use {}/exit{} or {}{}Ctrl+D{} to exit.\n",
+                        GRAY, BLUE, GRAY, GRAY, BOLD, RESET
+                    )
+                    .as_bytes(),
+                )?;
+                stdout.flush()?;
+                return Ok(None); // Return None to continue the main loop
+            }
+            Err(rustyline::error::ReadlineError::Eof) => {
+                stdout.write_all("\n".as_bytes())?;
+                return Ok(None); // EOF - signal to exit
+            }
+            Err(err) => {
+                eprintln!("{}Error reading input: {}{}", RED, err, RESET);
+                return Ok(None);
+            }
+        }
+    }
+}
 
 pub async fn run_agent_loop(
     provider: Arc<Mutex<dyn Provider + Send + Sync>>,
     tool_manager: ToolManager,
-    ollama_tools: Vec<ToolInfo>,
     messages: &mut Vec<Message>,
     dispatcher: &mut CommandDispatcher,
     session: &mut Session,
+    interrupted: &Arc<AtomicBool>,
 ) -> Result<(), Box<dyn Error>> {
-    let (send, mut recv) = mpsc::channel::<ChatMessageResponse>(1024);
-
     let mut stdout = io::stdout();
     stdout.write_all(
         format!(
@@ -79,7 +168,21 @@ pub async fn run_agent_loop(
     rl.set_helper(Some(helper));
     rl.load_history(&history_path).ok();
 
+    // Configure multi-line input:
+    // - Ctrl+J inserts a newline
+    // - Enter submits the input
+    // - Validator detects incomplete input (trailing \, unclosed fences) and shows continuation prompt
+    rl.bind_sequence(
+        rustyline::KeyEvent(rustyline::KeyCode::Char('j'), rustyline::Modifiers::CTRL),
+        rustyline::EventHandler::Simple(rustyline::Cmd::Newline),
+    );
+
     loop {
+        // Clear any stale interrupt flag from a previous turn.
+        // The flag may be set from Ctrl+C during rustyline's blocking read,
+        // which we handle below by showing a hint and continuing.
+        interrupted.store(false, Ordering::SeqCst);
+
         let mode_label = dispatcher.current_mode.to_string();
         let msg_count = messages.len();
         let pinned_count = dispatcher.file_context.pinned_file_count();
@@ -92,37 +195,31 @@ pub async fn run_agent_loop(
             "{}[{}]{} {}{}> {}{}",
             BOLD, mode_label, RESET, GRAY, context_info, BLUE, RESET
         );
-        let readline = rl.readline(&prompt);
-        let user_input = match readline {
-            Ok(line) => {
-                let trimmed = line.trim().to_string();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                rl.add_history_entry(&trimmed)?;
-                trimmed
-            }
-            Err(rustyline::error::ReadlineError::Interrupted) => {
-                stdout.write_all("\n".as_bytes())?;
-                stdout.write_all(
-                    format!(
-                        "{}Use {}/exit{} or {}{}Ctrl+D{} to exit.\n",
-                        GRAY, BLUE, GRAY, GRAY, BOLD, RESET
-                    )
-                    .as_bytes(),
-                )?;
-                stdout.flush()?;
-                continue;
-            }
-            Err(rustyline::error::ReadlineError::Eof) => {
-                stdout.write_all("\n".as_bytes())?;
-                break;
-            }
-            Err(err) => {
-                eprintln!("{}Error reading input: {}{}", RED, err, RESET);
-                break;
-            }
-        };
+        let continuation_prompt = format!(
+            "{}[{}]{} {}{}...> {}{}",
+            BOLD, mode_label, RESET, GRAY, context_info, BLUE, RESET
+        );
+
+        // Read input with support for multi-line continuation
+        let user_input = read_multiline_input(
+            &mut rl,
+            &prompt,
+            &continuation_prompt,
+            interrupted,
+            &mut stdout,
+        )?;
+
+        if user_input.is_none() {
+            // EOF or error - exit
+            break;
+        }
+
+        let user_input = user_input.unwrap();
+        let trimmed = user_input.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        rl.add_history_entry(&trimmed)?;
 
         if user_input.starts_with('/') {
             match CommandDispatcher::parse(&user_input) {
@@ -130,11 +227,12 @@ pub async fn run_agent_loop(
                     match dispatcher.dispatch(cmd, messages).await {
                         Ok(CommandResult::Ok) => {}
                         Ok(CommandResult::SwitchSession(id_prefix)) => {
-                            match Session::find_by_prefix(&id_prefix) {
+                            let store = SessionStore::default_path();
+                            match store.find_by_prefix(&id_prefix) {
                                 Ok(full_id) => {
                                     // Flush current session before switching
                                     session.flush();
-                                    match Session::load(&full_id) {
+                                    match store.load(&full_id) {
                                         Ok((new_session, loaded_msgs)) => {
                                             let meta = new_session.meta();
                                             let name = meta.name.as_deref().unwrap_or("unnamed");
@@ -224,67 +322,103 @@ pub async fn run_agent_loop(
         // Auto-save: user message
         session.append_message(messages.last().unwrap());
 
-        // Drain any leftover messages in the channel
-        while recv.try_recv().is_ok() {}
-
         // auto_accept persists across all agent iterations within this user turn,
         // so that pressing 'a' once auto-accepts all subsequent tool calls.
         let mut auto_accept = false;
         let mut token_usage: Option<TokenUsage> = None;
 
         loop {
-            let messages_cloned = messages.clone();
-            let send_cloned = send.clone();
-            let provider_cloned = Arc::clone(&provider);
             // Filter tools based on current mode
-            let tools = match dispatcher.current_mode {
-                AgentMode::Agent => ollama_tools.clone(),
-                AgentMode::Planning => tool_manager.get_readonly_tools(),
-                AgentMode::Casual => Vec::new(),
-                AgentMode::Research => tool_manager.get_research_tools(),
+            let tools = tool_manager.tools_for_mode(dispatcher.current_mode);
+
+            // Call the provider — it returns a receiver for streaming chunks
+            let mut recv = {
+                let mut provider = provider.lock().await;
+                provider.chat(messages.clone(), tools).await
             };
-            let cloned_user_input = user_input.clone();
-            tokio::spawn(async move {
-                let mut provider = provider_cloned.lock().await;
-                provider
-                    .chat(messages_cloned, cloned_user_input, send_cloned, tools)
-                    .await;
-            });
 
             let mut response_content = String::new();
             let mut tool_calls: Vec<ToolCall> = Vec::new();
             let mut received_done = false;
             let mut is_error = false;
+            let mut was_interrupted = false;
 
             stdout.write_all(ORANGE.as_bytes())?;
 
-            while let Some(msg) = recv.recv().await {
-                if !msg.message.tool_calls.is_empty() {
-                    tool_calls = msg.message.tool_calls.clone();
-                }
+            loop {
+                tokio::select! {
+                    msg = recv.recv() => {
+                        match msg {
+                            Some(msg) => {
+                                if !msg.message.tool_calls.is_empty() {
+                                    tool_calls = msg.message.tool_calls.clone();
+                                }
 
-                if msg.done {
-                    received_done = true;
-                }
+                                if msg.done {
+                                    received_done = true;
+                                }
 
-                if msg.is_error {
-                    is_error = true;
-                }
+                                if msg.is_error {
+                                    is_error = true;
+                                }
 
-                // Capture token usage from the final response
-                if msg.done && token_usage.is_none() {
-                    token_usage = msg.usage.clone();
-                }
+                                // Capture token usage from the final response
+                                if msg.done && token_usage.is_none() {
+                                    token_usage = msg.usage.clone();
+                                }
 
-                if !msg.message.content.is_empty() {
-                    response_content.push_str(&msg.message.content);
-                    stdout.write_all(msg.message.content.as_bytes())?;
-                    stdout.flush()?;
-                }
+                                if !msg.message.content.is_empty() {
+                                    response_content.push_str(&msg.message.content);
+                                    stdout.write_all(msg.message.content.as_bytes())?;
+                                    stdout.flush()?;
+                                }
 
-                if received_done {
-                    break;
+                                if received_done {
+                                    break;
+                                }
+                            }
+                            None => {
+                                // Channel closed — treat as end of stream
+                                break;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                        // Check if the user pressed Ctrl+C
+                        if interrupted.load(Ordering::SeqCst) {
+                            was_interrupted = true;
+                            break;
+                        }
+                    }
                 }
+            }
+
+            // Handle user interrupt (Ctrl+C during generation)
+            if was_interrupted {
+                interrupted.store(false, Ordering::SeqCst);
+                stdout.write_all(RESET.as_bytes())?;
+                writeln!(
+                    stdout,
+                    "\n{}⚠ Generation interrupted by user.{}",
+                    ORANGE, RESET
+                )?;
+                stdout.flush()?;
+
+                // Save any partial content as an assistant message so the
+                // conversation remains coherent for future turns.
+                if !response_content.is_empty() {
+                    messages.push(Message {
+                        role: Role::Assistant,
+                        content: response_content,
+                        tool_calls: vec![],
+                    });
+                    session.append_message(messages.last().unwrap());
+                } else {
+                    // No content was generated — remove the user message so
+                    // the next retry isn't confused by a dangling prompt.
+                    messages.pop();
+                }
+                break; // Break out of the inner generation loop, back to input prompt
             }
 
             if !received_done || is_error {
@@ -313,8 +447,6 @@ pub async fn run_agent_loop(
 
                     if answer.is_empty() || answer == "y" || answer == "yes" {
                         should_retry = true;
-                        // Drain any leftover messages in the channel before retrying
-                        while recv.try_recv().is_ok() {}
                         break;
                     } else if answer == "n" || answer == "no" {
                         should_retry = false;
@@ -345,6 +477,7 @@ pub async fn run_agent_loop(
                 &mut auto_accept,
                 session,
                 Arc::clone(&provider),
+                interrupted,
             )
             .await?
             {
@@ -365,7 +498,7 @@ pub async fn run_agent_loop(
         let estimated_total = estimate_conversation_tokens(messages);
 
         // Use configured context limit for warnings, or fall back to default
-        let settings = crate::config::Settings::load();
+        let settings = load_settings();
         let context_size = settings
             .context_limit
             .map(ContextWindowSize::Custom)
@@ -455,6 +588,7 @@ async fn handle_tool_calls<W: Write>(
     auto_accept: &mut bool,
     session: &mut Session,
     provider: Arc<Mutex<dyn Provider + Send + Sync>>,
+    interrupted: &Arc<AtomicBool>,
 ) -> Result<bool, Box<dyn Error>> {
     if tool_calls.is_empty() {
         return Ok(false);
@@ -470,10 +604,20 @@ async fn handle_tool_calls<W: Write>(
     });
     session.append_message(messages.last().unwrap());
 
-    let sensitive_tools = ["run", "write", "edit", "switch_mode"];
-
     for call in tool_calls {
-        let needs_confirmation = sensitive_tools.contains(&call.function.name.as_str());
+        // Check for interrupt between tool calls
+        if interrupted.load(Ordering::SeqCst) {
+            interrupted.store(false, Ordering::SeqCst);
+            writeln!(
+                stdout,
+                "\n{}⚠ Tool execution interrupted by user.{}",
+                ORANGE, RESET
+            )?;
+            stdout.flush()?;
+            return Ok(true); // Signal that there are tool results in the conversation
+        }
+
+        let needs_confirmation = tool_manager.needs_approval(&call.function.name);
 
         // Confirmation step
         if !confirm_tool_call(call, needs_confirmation, auto_accept, stdout)? {
@@ -491,29 +635,43 @@ async fn handle_tool_calls<W: Write>(
             continue;
         }
 
-        // Special handling: switch_mode tool performs an actual mode switch through the dispatcher.
-        if call.function.name == "switch_mode" {
-            handle_switch_mode(call, dispatcher, messages, session, stdout)?;
-            continue;
-        }
-
-        // Special handling: question tool prompts the user for an answer interactively.
-        if call.function.name == "question" {
-            handle_question(call, messages, session, stdout)?;
-            continue;
-        }
-
-        // Special handling: auto_compact tool triggers conversation compaction.
-        if call.function.name == "auto_compact" {
-            handle_auto_compact(
-                call,
-                dispatcher,
-                messages,
-                session,
-                stdout,
-                Arc::clone(&provider),
-            )
-            .await?;
+        // Signal tools are handled specially by the agent loop — they don't
+        // go through generic execution. Parse the call into a structured
+        // SignalEvent and dispatch accordingly.
+        if tool_manager.is_signal_tool(&call.function.name) {
+            if let Some(event) =
+                tool_manager.parse_signal_event(&call.function.name, &call.function.arguments)
+            {
+                match event {
+                    SignalEvent::SwitchMode { mode } => {
+                        handle_switch_mode(mode, dispatcher, messages, session, stdout)?;
+                    }
+                    SignalEvent::Question { question, answers } => {
+                        handle_question(&question, &answers, messages, session, stdout)?;
+                    }
+                    SignalEvent::AutoCompact { focus } => {
+                        handle_auto_compact(
+                            &focus,
+                            messages,
+                            session,
+                            stdout,
+                            Arc::clone(&provider),
+                        )
+                        .await?;
+                    }
+                }
+            } else {
+                // Failed to parse signal arguments — record an error message.
+                messages.push(Message {
+                    role: Role::Tool,
+                    content: format!(
+                        "Error: Could not parse arguments for signal tool '{}'.",
+                        call.function.name
+                    ),
+                    tool_calls: vec![],
+                });
+                session.append_message(messages.last().unwrap());
+            }
             continue;
         }
 
@@ -627,75 +785,41 @@ async fn execute_generic_tool<W: Write>(
     session.append_message(messages.last().unwrap());
 }
 
-/// Handle the switch_mode tool: parse mode, update dispatcher, and update system prompt.
+/// Handle the switch_mode signal: update dispatcher and system prompt.
 fn handle_switch_mode<W: Write>(
-    call: &ToolCall,
+    new_mode: AgentMode,
     dispatcher: &mut CommandDispatcher,
     messages: &mut Vec<Message>,
     session: &mut Session,
     stdout: &mut W,
 ) -> Result<(), Box<dyn Error>> {
-    let mode_str = call
-        .function
-        .arguments
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let old_mode = dispatcher.current_mode;
+    match dispatcher.switch_mode(new_mode, messages) {
+        Ok(()) => {
+            session.set_mode(new_mode);
 
-    if mode_str.is_empty() {
-        messages.push(Message {
-            role: Role::Tool,
-            content: "Error: 'mode' argument is required for switch_mode. Valid values: casual, planning, agent, research".to_string(),
-            tool_calls: vec![],
-        });
-        session.append_message(messages.last().unwrap());
-        return Ok(());
-    }
+            writeln!(
+                stdout,
+                "\n{}{}🔄 Mode switched: {} → {}{}",
+                BOLD, BLUE, old_mode, new_mode, RESET
+            )?;
+            stdout.flush()?;
 
-    match mode_str.parse::<AgentMode>() {
-        Ok(new_mode) => {
-            let old_mode = dispatcher.current_mode;
-            match dispatcher.switch_mode(new_mode, messages) {
-                Ok(()) => {
-                    session.set_mode(new_mode);
-
-                    writeln!(
-                        stdout,
-                        "\n{}{}🔄 Mode switched: {} → {}{}",
-                        BOLD, BLUE, old_mode, new_mode, RESET
-                    )?;
-                    stdout.flush()?;
-
-                    messages.push(Message {
-                        role: Role::Tool,
-                        content: format!(
-                            "SUCCESS: Mode switched from '{}' to '{}'. The assistant is now in {} mode and will use the appropriate toolset and behavior.",
-                            old_mode, new_mode, new_mode
-                        ),
-                        tool_calls: vec![],
-                    });
-                    session.append_message(messages.last().unwrap());
-                }
-                Err(msg) => {
-                    writeln!(stdout, "  {}{}{}", ORANGE, msg, RESET)?;
-                    messages.push(Message {
-                        role: Role::Tool,
-                        content: format!("Already in '{}' mode. No change was made.", new_mode),
-                        tool_calls: vec![],
-                    });
-                    session.append_message(messages.last().unwrap());
-                }
-            }
-        }
-        Err(e) => {
-            writeln!(stdout, "  {}Error: {}{}", RED, e, RESET)?;
             messages.push(Message {
                 role: Role::Tool,
                 content: format!(
-                    "Error: {}. Valid modes: casual, planning, agent, research",
-                    e
+                    "SUCCESS: Mode switched from '{}' to '{}'. The assistant is now in {} mode and will use the appropriate toolset and behavior.",
+                    old_mode, new_mode, new_mode
                 ),
+                tool_calls: vec![],
+            });
+            session.append_message(messages.last().unwrap());
+        }
+        Err(msg) => {
+            writeln!(stdout, "  {}{}{}", ORANGE, msg, RESET)?;
+            messages.push(Message {
+                role: Role::Tool,
+                content: format!("Already in '{}' mode. No change was made.", new_mode),
                 tool_calls: vec![],
             });
             session.append_message(messages.last().unwrap());
@@ -704,34 +828,14 @@ fn handle_switch_mode<W: Write>(
     Ok(())
 }
 
-/// Handle the question tool: display options and prompt user for a choice.
+/// Handle the question signal: display options and prompt user for a choice.
 fn handle_question<W: Write>(
-    call: &ToolCall,
+    question_text: &str,
+    answers: &[String],
     messages: &mut Vec<Message>,
     session: &mut Session,
     stdout: &mut W,
 ) -> Result<(), Box<dyn Error>> {
-    let question_text = call
-        .function
-        .arguments
-        .get("question")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    let answers: Vec<String> = call
-        .function
-        .arguments
-        .get("answers")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
     if question_text.is_empty() {
         messages.push(Message {
             role: Role::Tool,
@@ -827,23 +931,14 @@ fn handle_question<W: Write>(
     Ok(())
 }
 
-/// Handle the auto_compact tool: trigger conversation compaction.
+/// Handle the auto_compact signal: trigger conversation compaction.
 async fn handle_auto_compact<W: Write>(
-    call: &ToolCall,
-    _dispatcher: &mut CommandDispatcher,
+    focus: &str,
     messages: &mut Vec<Message>,
     session: &mut Session,
     stdout: &mut W,
     provider: Arc<Mutex<dyn Provider + Send + Sync>>,
 ) -> Result<(), Box<dyn Error>> {
-    let focus = call
-        .function
-        .arguments
-        .get("focus")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
     writeln!(
         stdout,
         "\n{}  {}▶ auto_compact{} Compacting conversation history...",
@@ -854,7 +949,7 @@ async fn handle_auto_compact<W: Write>(
     // Lock the provider and perform compaction
     let mut provider_guard = provider.lock().await;
 
-    match execute_compact(&mut *provider_guard, messages, &focus).await {
+    match execute_compact(&mut *provider_guard, messages, focus).await {
         Ok(()) => {
             // Compaction successful
             messages.push(Message {
@@ -864,7 +959,7 @@ async fn handle_auto_compact<W: Write>(
                     if focus.is_empty() {
                         "general summary"
                     } else {
-                        &focus
+                        focus
                     }
                 ),
                 tool_calls: vec![],

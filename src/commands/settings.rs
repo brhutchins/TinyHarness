@@ -1,8 +1,9 @@
-use crate::config::Settings;
+use tinyharness_lib::config::load_settings;
+
 use crate::style::*;
 
 pub fn execute() {
-    let settings = Settings::load();
+    let settings = load_settings();
 
     println!();
     println!(

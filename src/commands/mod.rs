@@ -14,13 +14,14 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::{
-    config::Settings,
+use tinyharness_lib::{
+    config::{load_settings, save_settings},
     context::WorkspaceContext,
     mode::AgentMode,
     provider::{Message, Provider, Role},
-    style::*,
 };
+
+use crate::style::*;
 
 pub use files::FileContext;
 pub use init::InitResult;
@@ -111,9 +112,9 @@ impl CommandDispatcher {
         self.refresh_system_prompt(messages);
 
         // Auto-save mode
-        let mut settings = Settings::load();
+        let mut settings = load_settings();
         settings.preferred_mode = self.current_mode;
-        settings.save();
+        save_settings(&settings);
 
         Ok(())
     }
@@ -318,9 +319,9 @@ impl CommandDispatcher {
                 let mut provider = self.provider.lock().await;
                 models::execute_select(&mut *provider, &name).await?;
                 // Auto-save model
-                let mut settings = Settings::load();
+                let mut settings = load_settings();
                 settings.last_model = provider.current_model();
-                settings.save();
+                save_settings(&settings);
                 Ok(CommandResult::Ok)
             }
             Command::Mode(mode_str) => {
@@ -433,7 +434,7 @@ impl CommandDispatcher {
             }
             Command::Timeout(arg) => {
                 if arg.is_empty() {
-                    let settings = Settings::load();
+                    let settings = load_settings();
                     println!(
                         "{}Current timeout: {}{}s{}",
                         BOLD, BLUE, settings.ollama_timeout_secs, RESET
@@ -443,9 +444,9 @@ impl CommandDispatcher {
                 match arg.parse::<u64>() {
                     Ok(secs) if secs > 0 => {
                         // Update settings
-                        let mut settings = Settings::load();
+                        let mut settings = load_settings();
                         settings.ollama_timeout_secs = secs;
-                        settings.save();
+                        save_settings(&settings);
                         // Update live provider
                         let mut provider = self.provider.lock().await;
                         provider.set_timeout(secs);
@@ -464,7 +465,7 @@ impl CommandDispatcher {
             }
             Command::Retries(arg) => {
                 if arg.is_empty() {
-                    let settings = Settings::load();
+                    let settings = load_settings();
                     println!(
                         "{}Current max retries: {}{}{}",
                         BOLD, BLUE, settings.ollama_max_retries, RESET
@@ -474,9 +475,9 @@ impl CommandDispatcher {
                 match arg.parse::<u32>() {
                     Ok(count) => {
                         // Update settings
-                        let mut settings = Settings::load();
+                        let mut settings = load_settings();
                         settings.ollama_max_retries = count;
-                        settings.save();
+                        save_settings(&settings);
                         // Update live provider
                         let mut provider = self.provider.lock().await;
                         provider.set_retries(count);
@@ -494,7 +495,7 @@ impl CommandDispatcher {
             }
             Command::ContextLimit(arg) => {
                 if arg.is_empty() {
-                    let settings = Settings::load();
+                    let settings = load_settings();
                     match settings.context_limit {
                         Some(limit) => {
                             println!(
@@ -513,9 +514,9 @@ impl CommandDispatcher {
                 }
                 if arg == "auto" || arg == "default" {
                     // Clear the limit
-                    let mut settings = Settings::load();
+                    let mut settings = load_settings();
                     settings.context_limit = None;
-                    settings.save();
+                    save_settings(&settings);
                     println!(
                         "{}Context limit cleared. Using model default for warnings.{}",
                         BOLD, RESET
@@ -525,9 +526,9 @@ impl CommandDispatcher {
                 match arg.parse::<u32>() {
                     Ok(limit) if limit > 0 => {
                         // Update settings
-                        let mut settings = Settings::load();
+                        let mut settings = load_settings();
                         settings.context_limit = Some(limit);
-                        settings.save();
+                        save_settings(&settings);
                         println!(
                             "{}Context limit set to {}{} tokens{} for warning calculations.{}",
                             BOLD, BLUE, limit, RESET, RESET
