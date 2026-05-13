@@ -1,4 +1,5 @@
 pub mod apikey;
+pub mod audit;
 pub mod clear;
 pub mod command;
 pub mod compact;
@@ -60,6 +61,7 @@ pub enum Command {
     CommandReset,
     CommandResetDeny,
     CommandHelp,
+    Audit(String),
 }
 
 /// Result of dispatching a command.
@@ -226,6 +228,7 @@ impl CommandDispatcher {
                     }
                 }
             }
+            "/audit" => Some(Command::Audit(arg.unwrap_or_default())),
             _ => None,
         }
     }
@@ -261,6 +264,7 @@ impl CommandDispatcher {
             "/contextlimit",
             "/autoaccept",
             "/command",
+            "/audit",
         ]
     }
 
@@ -362,6 +366,10 @@ impl CommandDispatcher {
             ),
             ("/command reset", "Reset auto-accepted commands to defaults"),
             ("/command resetdeny", "Clear the always-deny list"),
+            (
+                "/audit [last|session|clear]",
+                "View command execution audit log",
+            ),
         ]
     }
 
@@ -707,6 +715,10 @@ impl CommandDispatcher {
             }
             Command::CommandUndeny(cmd) => {
                 command::execute_undeny(&cmd);
+                Ok(CommandResult::Ok)
+            }
+            Command::Audit(args) => {
+                audit::execute(&args);
                 Ok(CommandResult::Ok)
             }
         }

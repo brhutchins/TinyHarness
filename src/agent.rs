@@ -935,9 +935,36 @@ async fn execute_generic_tool<W: Write>(
             .unwrap();
     }
     stdout.flush().unwrap();
+    
+    // Capture start time for duration tracking
+    let start_time = std::time::Instant::now();
+    
     let result = tool_manager
         .execute_tool_call(&call.function.name, &call.function.arguments)
         .await;
+    
+    // Calculate duration
+    let duration_ms = start_time.elapsed().as_millis() as u64;
+
+    // Log to audit if this is a "run" command
+    if call.function.name == "run"
+        && let Some(cmd) = call.function.arguments.get("command").and_then(|v| v.as_str())
+    {
+        // Extract exit code from result (first line might contain it, or assume 0)
+        let exit_code = if result.starts_with("Error:") { -1 } else { 0 };
+        
+        // Get session ID
+        let session_id = session.id().to_string();
+        
+        // Log the command
+        crate::commands::audit::log_command(
+            &session_id,
+            cmd,
+            exit_code,
+            auto_accepted,
+            duration_ms,
+        );
+    }
 
     // For tools that return potentially large listings, show only a summary
     // line to keep the terminal clean. The full content is still sent to the
