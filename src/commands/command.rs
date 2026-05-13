@@ -316,6 +316,47 @@ pub fn execute_list() {
     println!();
 }
 
+pub fn execute_help() {
+    println!();
+    println!("{}Command management — subcommands:{}", BOLD, RESET);
+    println!();
+    println!(
+        "  {}{:<16}{} Show auto-accepted and denied commands",
+        CYAN, "list", RESET
+    );
+    println!(
+        "  {}{:<16}{} Add a command to the auto-accept list",
+        CYAN, "add <cmd>", RESET
+    );
+    println!(
+        "  {}{:<16}{} Remove a command from the auto-accept list",
+        CYAN, "rm <cmd>", RESET
+    );
+    println!(
+        "  {}{:<16}{} Always require confirmation for a command",
+        CYAN, "deny <cmd>", RESET
+    );
+    println!(
+        "  {}{:<16}{} Remove a command from the deny list",
+        CYAN, "undeny <cmd>", RESET
+    );
+    println!(
+        "  {}{:<16}{} Reset auto-accepted commands to defaults",
+        CYAN, "reset", RESET
+    );
+    println!(
+        "  {}{:<16}{} Clear the entire deny list",
+        CYAN, "resetdeny", RESET
+    );
+    println!("  {}{:<16}{} Show this help message", CYAN, "help", RESET);
+    println!();
+    println!(
+        "{}Tip:{} Use {}/settings all{} to see all safe commands in detail.",
+        GRAY, RESET, BOLD, RESET
+    );
+    println!();
+}
+
 pub fn execute_reset() {
     let mut settings = load_settings();
     let defaults = get_default_safe_commands();

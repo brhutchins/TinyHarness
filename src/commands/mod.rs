@@ -58,6 +58,7 @@ pub enum Command {
     CommandList,
     CommandReset,
     CommandResetDeny,
+    CommandHelp,
 }
 
 /// Result of dispatching a command.
@@ -210,6 +211,7 @@ impl CommandDispatcher {
                         "list" | "ls" => Some(Command::CommandList),
                         "reset" => Some(Command::CommandReset),
                         "resetdeny" => Some(Command::CommandResetDeny),
+                        "help" => Some(Command::CommandHelp),
                         _ => Some(Command::CommandList),
                     }
                 }
@@ -655,6 +657,10 @@ impl CommandDispatcher {
             }
             Command::CommandResetDeny => {
                 command::execute_reset_deny();
+                Ok(CommandResult::Ok)
+            }
+            Command::CommandHelp => {
+                command::execute_help();
                 Ok(CommandResult::Ok)
             }
             Command::CommandAdd(cmd) => {

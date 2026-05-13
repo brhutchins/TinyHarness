@@ -9,6 +9,27 @@ use rustyline::{
 use crate::commands::CommandDispatcher;
 use crate::style::*;
 
+/// Subcommand completions for commands that take arguments.
+fn subcommand_completions(cmd: &str) -> Vec<&'static str> {
+    match cmd {
+        "/command" => vec![
+            "add",
+            "deny",
+            "help",
+            "list",
+            "rm",
+            "reset",
+            "resetdeny",
+            "undeny",
+        ],
+        "/mode" => vec!["agent", "casual", "planning", "research"],
+        "/settings" => vec!["all"],
+        "/autoaccept" => vec!["off", "on"],
+        "/apikey" => vec!["clear"],
+        _ => vec![],
+    }
+}
+
 #[derive(Completer, Helper, Highlighter, Hinter)]
 pub struct CommandHelper {
     #[rustyline(Completer)]
@@ -81,8 +102,32 @@ impl Completer for CommandCompleter {
         }
 
         let prefix = &line[..pos];
-        let cmd_prefix = prefix.to_lowercase();
 
+        // Check if we're completing a subcommand argument
+        if let Some(space_pos) = prefix.find(' ') {
+            let cmd = &prefix[..space_pos].to_lowercase();
+            let sub_prefix = prefix[space_pos + 1..].trim_start().to_lowercase();
+            let subs = subcommand_completions(cmd);
+
+            if !subs.is_empty() {
+                let matches: Vec<String> = subs
+                    .iter()
+                    .filter(|s| s.starts_with(&sub_prefix))
+                    .take(5)
+                    .map(|s| format!("{} {}", cmd, s))
+                    .collect();
+
+                if matches.is_empty() {
+                    return Ok((0, vec![]));
+                }
+
+                // Return the completion starting from the beginning of the line
+                return Ok((0, matches));
+            }
+        }
+
+        // Top-level command completion
+        let cmd_prefix = prefix.to_lowercase();
         let matches: Vec<String> = CommandDispatcher::command_names()
             .iter()
             .filter(|name| name.starts_with(&cmd_prefix))
@@ -108,6 +153,40 @@ impl Hinter for CommandHinter {
             return None;
         }
 
+        // Check if we're hinting a subcommand
+        if let Some(space_pos) = line.find(' ') {
+            let cmd = &line[..space_pos].to_lowercase();
+            let sub_prefix = line[space_pos + 1..].trim_start().to_lowercase();
+            let subs = subcommand_completions(cmd);
+
+            if !subs.is_empty() {
+                let matches: Vec<&&str> = subs
+                    .iter()
+                    .filter(|s| s.starts_with(&sub_prefix))
+                    .take(5)
+                    .collect();
+
+                if matches.is_empty() {
+                    return None;
+                }
+
+                if matches.len() == 1 && sub_prefix.is_empty() {
+                    // Single exact match and no prefix typed yet — show the subcommand
+                    return Some(format!(" {}", matches[0]));
+                }
+
+                if matches.len() == 1 && sub_prefix == *matches[0] {
+                    // Exact match completed — no hint needed
+                    return None;
+                }
+
+                // Multiple matches or partial match — show options
+                let suggestions: Vec<&str> = matches.iter().map(|s| **s).collect();
+                return Some(format!("  ({})", suggestions.join(" | ")));
+            }
+        }
+
+        // Top-level command hinting
         let prefix = line.to_lowercase();
         let matches: Vec<&str> = CommandDispatcher::command_names()
             .iter()
