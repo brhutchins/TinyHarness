@@ -10,11 +10,11 @@ use tinyharness_lib::provider::ToolCall;
 use crate::style::*;
 
 /// Maximum width available for the command text on the first line,
-/// after the `  ` prefix (2 chars) and `$ ` (2 chars).
-const CMD_FIRST_AVAIL: usize = MAX_LINE_WIDTH - 4;
+/// after the `    ` prefix (4 chars) and `$ ` (2 chars).
+const CMD_FIRST_AVAIL: usize = MAX_LINE_WIDTH - 6;
 /// Maximum width available for continuation lines,
-/// after the `  ` prefix (2 chars) and `> ` (2 chars).
-const CMD_CONT_AVAIL: usize = MAX_LINE_WIDTH - 4;
+/// after the `    ` prefix (4 chars) and `> ` (2 chars).
+const CMD_CONT_AVAIL: usize = MAX_LINE_WIDTH - 6;
 
 /// Display a shell command, splitting it across multiple lines at word
 /// boundaries when it exceeds the available terminal width.
@@ -22,8 +22,8 @@ const CMD_CONT_AVAIL: usize = MAX_LINE_WIDTH - 4;
 /// Each line has BG_WARN background filling the full terminal width.
 fn write_command_lines<W: Write>(stdout: &mut W, cmd: &str) -> Result<(), Box<dyn Error>> {
     // BG_WARN starts at column 0, no RESET until end of line.
-    let prefix_first = format!("{BG_WARN}  {BOLD}{WHITE}$ ");
-    let prefix_cont = format!("{BG_WARN}  {DIM}{WHITE}> ");
+    let prefix_first = format!("{BG_WARN}    {BOLD}{WHITE}$ ");
+    let prefix_cont = format!("{BG_WARN}    {DIM}>{WHITE} ");
 
     // Split at spaces for word-wrapping
     let mut remaining = cmd;
