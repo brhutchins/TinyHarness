@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 use ollama_rs::{
@@ -74,9 +76,9 @@ fn to_ollama_tool_info(ti: ToolDefinition) -> ollama_rs::generation::tools::Tool
     ollama_rs::generation::tools::ToolInfo {
         tool_type: ollama_rs::generation::tools::ToolType::Function,
         function: ollama_rs::generation::tools::ToolFunctionInfo {
-            name: ti.function.name,
-            description: ti.function.description,
-            parameters: ti.function.parameters,
+            name: ti.name,
+            description: ti.description,
+            parameters: ti.parameters,
         },
     }
 }
@@ -100,22 +102,25 @@ impl OllamaProvider {
     }
 }
 
-#[async_trait::async_trait]
 impl Provider for OllamaProvider {
-    async fn health_check(&self) -> Result<(), String> {
-        self.client
-            .list_local_models()
-            .await
-            .map(|_| ())
-            .map_err(|e| format!("Cannot reach Ollama: {}", e))
+    fn health_check(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            match client.list_local_models().await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!("Cannot reach Ollama: {}", e)),
+            }
+        })
     }
 
-    async fn list_models(&self) -> Vec<String> {
-        if let Ok(models) = self.client.list_local_models().await {
-            models.into_iter().map(|m| m.name).collect()
-        } else {
-            vec![]
-        }
+    fn list_models(&self) -> Pin<Box<dyn Future<Output = Vec<String>> + Send>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            match client.list_local_models().await {
+                Ok(models) => models.into_iter().map(|m| m.name).collect(),
+                Err(_) => vec![],
+            }
+        })
     }
 
     fn select_model(&mut self, name: String) {
@@ -134,31 +139,25 @@ impl Provider for OllamaProvider {
         self.max_retries = max_retries;
     }
 
-    async fn chat(
+    fn chat(
         &mut self,
         messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
-    ) -> tokio::sync::mpsc::Receiver<ChatMessageResponse> {
-        let (send, recv) = tokio::sync::mpsc::channel::<ChatMessageResponse>(1024);
-
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<tokio::sync::mpsc::Receiver<ChatMessageResponse>, String>>
+                + Send,
+        >,
+    > {
         let model = match self.model.clone() {
             Some(m) => m,
             None => {
-                let _ = send
-                    .send(ChatMessageResponse {
-                        message: ChatMessage {
-                            content: "Error: No model selected. Use /model <name> to select one."
-                                .to_string(),
-                            tool_calls: vec![],
-                        },
-                        done: true,
-                        is_error: true,
-                        usage: None,
-                    })
-                    .await;
-                return recv;
+                return Box::pin(async move {
+                    Err("No model selected. Use /model <name> to select one.".to_string())
+                });
             }
         };
+        let (send, recv) = tokio::sync::mpsc::channel::<ChatMessageResponse>(1024);
         let timeout_secs = self.timeout_secs;
         let max_retries = self.max_retries;
         let client = self.client.clone();
@@ -180,7 +179,7 @@ impl Provider for OllamaProvider {
         tokio::spawn(async move {
             // Retry loop with exponential backoff
             let max_attempts = max_retries.max(1);
-            let mut stream = None;
+            let mut stream: Option<_> = None;
 
             for attempt in 1..=max_attempts {
                 let stream_result = tokio::time::timeout(
@@ -270,6 +269,6 @@ impl Provider for OllamaProvider {
             }
         });
 
-        recv
+        Box::pin(async move { Ok(recv) })
     }
 }
