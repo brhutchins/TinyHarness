@@ -38,3 +38,9 @@ pub const ACCENT_COLOR: &str = MAGENTA; // For highlights and emphasis
 
 // Special escape sequences
 pub const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
+
+/// Spinner frames for the progress indicator (Braille patterns)
+pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Clear the entire current line (used by spinner to erase previous frame)
+pub const CLEAR_LINE: &str = "\x1b[2K";

@@ -230,6 +230,7 @@ async fn execute_generic_tool<W: Write>(
     stdout: &mut W,
     auto_accepted: bool,
 ) {
+    // Show the "Executing..." header line
     if auto_accepted {
         if call.function.name == "run" {
             if let Some(cmd) = call
@@ -276,12 +277,41 @@ async fn execute_generic_tool<W: Write>(
     }
     stdout.flush().unwrap();
 
+    // Spinner state for tool execution animation
+    let mut spinner_idx: usize = 0;
+    let mut has_shown_spinner = false;
+
     // Capture start time for duration tracking
     let start_time = std::time::Instant::now();
 
-    let result = tool_manager
-        .execute_tool_call(&call.function.name, &call.function.arguments)
-        .await;
+    // Execute tool call with spinner animation using tokio::pin! and select!
+    let tool_fut = tool_manager.execute_tool_call(&call.function.name, &call.function.arguments);
+    tokio::pin!(tool_fut);
+
+    let result = loop {
+        tokio::select! {
+            result = &mut tool_fut => {
+                // Tool finished — clear spinner line if we showed one
+                if has_shown_spinner {
+                    write!(stdout, "\r{CLEAR_LINE}{RESET}").unwrap();
+                    stdout.flush().unwrap();
+                }
+                break result;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(80)) => {
+                // Animate spinner
+                let frame = SPINNER_FRAMES[spinner_idx % SPINNER_FRAMES.len()];
+                spinner_idx += 1;
+                if has_shown_spinner {
+                    write!(stdout, "\r{DIM}{frame} {RESET}").unwrap();
+                } else {
+                    write!(stdout, "{DIM}{frame} {RESET}").unwrap();
+                    has_shown_spinner = true;
+                }
+                stdout.flush().unwrap();
+            }
+        }
+    };
 
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -307,80 +337,87 @@ async fn execute_generic_tool<W: Write>(
     // For tools that return potentially large listings, show only a summary
     match call.function.name.as_str() {
         "read" => {
+            let is_error = result.starts_with("Error:");
             let summary = result.lines().next().unwrap_or("(empty result)");
-            let indicator = if result.starts_with("Error:") {
-                RED
-            } else {
-                GREEN
-            };
-            let icon = if result.starts_with("Error:") {
-                "✗"
-            } else {
-                "✓"
-            };
+            let indicator = if is_error { RED } else { GREEN };
+            let icon = if is_error { "✗" } else { "✓" };
+            let summary_color = if is_error { RED } else { DIM };
             writeln!(
                 stdout,
-                "{BG_DIM}  {indicator}{icon}{RESET}{BG_DIM} {DIM}{name}{RESET}{BG_DIM} {duration}{DIM}{summary}{FILL_EOL}{RESET}",
+                "{BG_DIM}  {indicator}{icon}{RESET}{BG_DIM} {DIM}{name}{RESET}{BG_DIM} {duration}{summary_color}{summary}{FILL_EOL}{RESET}",
                 indicator = indicator,
                 icon = icon,
                 name = call.function.name,
                 duration = format_duration(duration_ms),
+                summary_color = summary_color,
                 summary = summary
             )
             .unwrap();
         }
         "ls" | "grep" | "glob" => {
+            let is_error = result.starts_with("Error:");
             let summary = super::display::summarize_listing_result(&result, &call.function.name);
-            let indicator = if result.starts_with("Error:") {
-                RED
-            } else {
-                GREEN
-            };
-            let icon = if result.starts_with("Error:") {
-                "✗"
-            } else {
-                "✓"
-            };
+            let indicator = if is_error { RED } else { GREEN };
+            let icon = if is_error { "✗" } else { "✓" };
+            let summary_color = if is_error { RED } else { DIM };
             writeln!(
                 stdout,
-                "{BG_DIM}  {indicator}{icon}{RESET}{BG_DIM} {DIM}{name}{RESET}{BG_DIM} {duration}{DIM}{summary}{FILL_EOL}{RESET}",
+                "{BG_DIM}  {indicator}{icon}{RESET}{BG_DIM} {DIM}{name}{RESET}{BG_DIM} {duration}{summary_color}{summary}{FILL_EOL}{RESET}",
                 indicator = indicator,
                 icon = icon,
                 name = call.function.name,
                 duration = format_duration(duration_ms),
+                summary_color = summary_color,
                 summary = summary
             )
             .unwrap();
         }
         _ => {
-            let indicator = if result.starts_with("Error:") {
-                RED
+            let is_error = result.starts_with("Error:");
+            let indicator = if is_error { RED } else { GREEN };
+            let icon = if is_error { "✗" } else { "✓" };
+
+            if is_error {
+                // Compact single-line error: truncate to fit one line
+                let error_msg = result.lines().next().unwrap_or("Error");
+                // Truncate at 80 chars to keep the line compact
+                let max_err_len = 80;
+                let truncated = if error_msg.len() > max_err_len {
+                    let cut = error_msg.floor_char_boundary(max_err_len - 1);
+                    format!("{}…", &error_msg[..cut])
+                } else {
+                    error_msg.to_string()
+                };
+                writeln!(
+                    stdout,
+                    "{BG_DIM}  {indicator}{icon}{RESET}{BG_DIM} {DIM}{name}{RESET}{BG_DIM} {duration}{RED}{truncated}{FILL_EOL}{RESET}",
+                    indicator = indicator,
+                    icon = icon,
+                    name = call.function.name,
+                    duration = format_duration(duration_ms),
+                    truncated = truncated,
+                )
+                .unwrap();
             } else {
-                GREEN
-            };
-            let icon = if result.starts_with("Error:") {
-                "✗"
-            } else {
-                "✓"
-            };
-            writeln!(
-                stdout,
-                "{BG_DIM}  {indicator}{icon}{RESET}{BG_DIM} {DIM}{name}{RESET}{BG_DIM} {duration}",
-                indicator = indicator,
-                icon = icon,
-                name = call.function.name,
-                duration = format_duration(duration_ms),
-            )
-            .unwrap();
-            crate::ui::wrap::write_wrapped_lines(
-                stdout,
-                &result,
-                &format!("{BG_DIM}      "),
-                &format!("      {BG_DIM}{DIM}"),
-                crate::ui::wrap::MAX_LINE_WIDTH,
-                true, // fill background to end of line
-            )
-            .unwrap();
+                writeln!(
+                    stdout,
+                    "{BG_DIM}  {indicator}{icon}{RESET}{BG_DIM} {DIM}{name}{RESET}{BG_DIM} {duration}",
+                    indicator = indicator,
+                    icon = icon,
+                    name = call.function.name,
+                    duration = format_duration(duration_ms),
+                )
+                .unwrap();
+                crate::ui::wrap::write_wrapped_lines(
+                    stdout,
+                    &result,
+                    &format!("{BG_DIM}      "),
+                    &format!("      {BG_DIM}{DIM}"),
+                    crate::ui::wrap::MAX_LINE_WIDTH,
+                    true, // fill background to end of line
+                )
+                .unwrap();
+            }
         }
     }
     writeln!(stdout, "{RESET}").unwrap();

@@ -129,9 +129,14 @@ pub async fn run_agent_loop(
             estimate_conversation_tokens(messages),
             context_size,
         );
+
+        // Include session name in prompt if available
+        let session_name = session.meta().name.as_deref().unwrap_or("unnamed");
+        let session_suffix = format!(" {DIM}({}){RESET}", session_name);
+
         let prompt = format!(
-            "{}\n{}[{}]{}> {}{}",
-            status_line, mode_color, mode_label, RESET, BLUE, RESET
+            "{}{}{}\n{}[{}]{}> {}{}",
+            status_line, session_suffix, RESET, mode_color, mode_label, RESET, BLUE, RESET
         );
         let continuation_prompt = format!(
             "{}[{}]{}...> {}{}",
@@ -294,6 +299,11 @@ pub async fn run_agent_loop(
             let mut is_error = false;
             let mut was_interrupted = false;
 
+            // Spinner state: animate while waiting for the first content chunk
+            let mut spinner_idx: usize = 0;
+            let mut waiting_for_first_chunk = true;
+            let mut has_shown_spinner = false;
+
             stdout.write_all(ORANGE.as_bytes())?;
 
             loop {
@@ -314,6 +324,16 @@ pub async fn run_agent_loop(
                                 }
 
                                 if !msg.message.content.is_empty() {
+                                    // Clear spinner before first content
+                                    if waiting_for_first_chunk && has_shown_spinner {
+                                        // Erase the spinner line: move to start, clear line
+                                        write!(stdout, "\r{CLEAR_LINE}")?;
+                                        stdout.flush()?;
+                                        waiting_for_first_chunk = false;
+                                    } else {
+                                        waiting_for_first_chunk = false;
+                                    }
+
                                     response_content.push_str(&msg.message.content);
                                     stdout.write_all(msg.message.content.as_bytes())?;
                                     stdout.flush()?;
@@ -335,8 +355,27 @@ pub async fn run_agent_loop(
                             was_interrupted = true;
                             break;
                         }
+
+                        // Show spinner animation while waiting for first chunk
+                        if waiting_for_first_chunk {
+                            let frame = SPINNER_FRAMES[spinner_idx % SPINNER_FRAMES.len()];
+                            spinner_idx += 1;
+                            if has_shown_spinner {
+                                write!(stdout, "\r{DIM}{frame} Thinking...{RESET}")?;
+                            } else {
+                                write!(stdout, "{DIM}{frame} Thinking...{RESET}")?;
+                                has_shown_spinner = true;
+                            }
+                            stdout.flush()?;
+                        }
                     }
                 }
+            }
+
+            // Clear spinner if still showing when stream ends
+            if waiting_for_first_chunk && has_shown_spinner {
+                write!(stdout, "\r{CLEAR_LINE}")?;
+                stdout.flush()?;
             }
 
             // Handle user interrupt (Ctrl+C during generation)
