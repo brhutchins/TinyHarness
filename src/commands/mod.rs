@@ -250,14 +250,16 @@ impl CommandDispatcher {
                 let name = arg.unwrap_or_default();
                 if name.is_empty() {
                     Some(Command::SkillList)
-                } else if name == "use" || name.starts_with("use ") {
-                    let skill_name = name.strip_prefix("use").unwrap().trim().to_string();
+                } else if let Some(skill_name) = name.strip_prefix("use ") {
+                    // "/skill use <name>" — activate a skill
+                    let skill_name = skill_name.trim().to_string();
                     if skill_name.is_empty() {
                         Some(Command::SkillList)
                     } else {
                         Some(Command::SkillUse(skill_name))
                     }
                 } else {
+                    // "/skill <name>" — show skill details
                     Some(Command::SkillShow(name))
                 }
             }
@@ -784,25 +786,33 @@ impl CommandDispatcher {
                 Ok(CommandResult::Ok)
             }
             Command::SkillUse(name) => {
-                // Validate that the skill exists before returning
-                if self.skill_registry.get(&name).is_some() {
-                    Ok(CommandResult::SkillUse(name))
-                } else {
-                    let available = self
-                        .skill_registry
-                        .skills
-                        .iter()
-                        .map(|s| s.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    println!(
-                        "{}Skill '{}' not found.{} Use {}/skills{} to list available skills.",
-                        RED, name, RESET, BOLD, RESET
-                    );
-                    if !available.is_empty() {
-                        println!("{}Available skills: {}{}{}", GRAY, CYAN, available, RESET);
+                // Validate that the skill exists and is user-invocable
+                match self.skill_registry.get(&name) {
+                    Some(skill) if !skill.user_invocable => {
+                        println!(
+                            "{}Skill '{}' is not user-invocable.{} It can only be activated by the model.",
+                            ORANGE, name, RESET
+                        );
+                        Ok(CommandResult::Ok)
                     }
-                    Ok(CommandResult::Ok)
+                    Some(_) => Ok(CommandResult::SkillUse(name)),
+                    None => {
+                        let available = self
+                            .skill_registry
+                            .skills
+                            .iter()
+                            .map(|s| s.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        println!(
+                            "{}Skill '{}' not found.{} Use {}/skills{} to list available skills.",
+                            RED, name, RESET, BOLD, RESET
+                        );
+                        if !available.is_empty() {
+                            println!("{}Available skills: {}{}{}", GRAY, CYAN, available, RESET);
+                        }
+                        Ok(CommandResult::Ok)
+                    }
                 }
             }
         }
