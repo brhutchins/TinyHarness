@@ -1,39 +1,20 @@
 use tinyharness_lib::config::{load_settings, save_settings};
-use tinyharness_lib::provider::Message;
 
-use crate::commands::registry::{Command, CommandContext, CommandResult};
+use crate::async_command;
+use crate::commands::registry::CommandResult;
 use crate::style::*;
 
-use std::future::Future;
-use std::pin::Pin;
+// ── Timeout (async — needs provider.lock().await) ─────────────────────────────
 
-// ── Timeout ──────────────────────────────────────────────────────────────────
-
-pub struct TimeoutCommand;
-
-impl Command for TimeoutCommand {
-    fn name(&self) -> &'static str {
-        "/timeout"
-    }
-
-    fn description(&self) -> &'static str {
-        "Show or set the Ollama request timeout in seconds (default: 5)"
-    }
-
-    fn usage(&self) -> &'static str {
-        "/timeout [secs]"
-    }
-
-    fn execute<'a>(
-        &'a self,
-        raw_arg: Option<&str>,
-        ctx: &'a mut CommandContext,
-        _messages: &'a mut Vec<Message>,
-    ) -> Pin<Box<dyn Future<Output = Result<CommandResult, String>> + Send + 'a>> {
+async_command!(
+    TimeoutCommand,
+    "/timeout",
+    "Show or set the Ollama request timeout in seconds (default: 5)",
+    "/timeout [secs]",
+    |raw_arg, ctx, _messages| {
         let arg = raw_arg.unwrap_or("").to_string();
         let provider = ctx.provider.clone();
-
-        Box::pin(async move {
+        async move {
             if arg.is_empty() {
                 let settings = load_settings();
                 println!(
@@ -45,11 +26,9 @@ impl Command for TimeoutCommand {
 
             match arg.parse::<u64>() {
                 Ok(secs) if secs > 0 => {
-                    // Update settings
                     let mut settings = load_settings();
                     settings.ollama_timeout_secs = secs;
                     save_settings(&settings);
-                    // Update live provider
                     let mut p = provider.lock().await;
                     p.set_timeout(secs);
                     println!(
@@ -64,37 +43,21 @@ impl Command for TimeoutCommand {
                     arg
                 )),
             }
-        })
+        }
     }
-}
+);
 
-// ── Retries ──────────────────────────────────────────────────────────────────
+// ── Retries (async — needs provider.lock().await) ─────────────────────────────
 
-pub struct RetriesCommand;
-
-impl Command for RetriesCommand {
-    fn name(&self) -> &'static str {
-        "/retries"
-    }
-
-    fn description(&self) -> &'static str {
-        "Show or set the maximum number of Ollama request retries (default: 3)"
-    }
-
-    fn usage(&self) -> &'static str {
-        "/retries [count]"
-    }
-
-    fn execute<'a>(
-        &'a self,
-        raw_arg: Option<&str>,
-        ctx: &'a mut CommandContext,
-        _messages: &'a mut Vec<Message>,
-    ) -> Pin<Box<dyn Future<Output = Result<CommandResult, String>> + Send + 'a>> {
+async_command!(
+    RetriesCommand,
+    "/retries",
+    "Show or set the maximum number of Ollama request retries (default: 3)",
+    "/retries [count]",
+    |raw_arg, ctx, _messages| {
         let arg = raw_arg.unwrap_or("").to_string();
         let provider = ctx.provider.clone();
-
-        Box::pin(async move {
+        async move {
             if arg.is_empty() {
                 let settings = load_settings();
                 println!(
@@ -106,11 +69,9 @@ impl Command for RetriesCommand {
 
             match arg.parse::<u32>() {
                 Ok(count) => {
-                    // Update settings
                     let mut settings = load_settings();
                     settings.ollama_max_retries = count;
                     save_settings(&settings);
-                    // Update live provider
                     let mut p = provider.lock().await;
                     p.set_retries(count);
                     println!(
@@ -124,11 +85,11 @@ impl Command for RetriesCommand {
                     arg
                 )),
             }
-        })
+        }
     }
-}
+);
 
-// ── ContextLimit (sync) ─────────────────────────────────────────────────────
+// ── ContextLimit (sync — no provider access needed) ──────────────────────────
 
 /// Execute the /contextlimit command (sync — no provider access needed).
 pub fn execute_context_limit(arg: Option<&str>) -> Result<CommandResult, String> {
@@ -154,7 +115,6 @@ pub fn execute_context_limit(arg: Option<&str>) -> Result<CommandResult, String>
     }
 
     if a == "auto" || a == "default" {
-        // Clear the limit
         let mut settings = load_settings();
         settings.context_limit = None;
         save_settings(&settings);
@@ -167,7 +127,6 @@ pub fn execute_context_limit(arg: Option<&str>) -> Result<CommandResult, String>
 
     match a.parse::<u32>() {
         Ok(limit) if limit > 0 => {
-            // Update settings
             let mut settings = load_settings();
             settings.context_limit = Some(limit);
             save_settings(&settings);
@@ -185,7 +144,7 @@ pub fn execute_context_limit(arg: Option<&str>) -> Result<CommandResult, String>
     }
 }
 
-// ── AutoAccept (sync) ───────────────────────────────────────────────────────
+// ── AutoAccept (sync — no provider access needed) ─────────────────────────────
 
 /// Execute the /autoaccept command (sync — no provider access needed).
 pub fn execute_autoaccept(arg: Option<&str>) -> Result<CommandResult, String> {
@@ -218,7 +177,6 @@ pub fn execute_autoaccept(arg: Option<&str>) -> Result<CommandResult, String> {
         }
     };
 
-    // Update settings
     let mut settings = load_settings();
     settings.auto_accept_safe_commands = new_value;
     save_settings(&settings);

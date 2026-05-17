@@ -3,11 +3,9 @@ use std::path::PathBuf;
 use tinyharness_lib::context::{PROJECT_MD_FILE_NAMES, WorkspaceContext};
 use tinyharness_lib::provider::{Message, Provider, Role};
 
-use crate::commands::registry::{Command, CommandContext, CommandResult};
+use crate::async_command;
+use crate::commands::registry::CommandResult;
 use crate::style::*;
-
-use std::future::Future;
-use std::pin::Pin;
 
 /// Result of the `/init` command.
 pub enum InitResult {
@@ -19,33 +17,20 @@ pub enum InitResult {
 
 // ── Command trait implementation ────────────────────────────────────────────
 
-pub struct InitCommand;
-
-impl Command for InitCommand {
-    fn name(&self) -> &'static str {
-        "/init"
-    }
-
-    fn description(&self) -> &'static str {
-        "Generate or update TINYHARNESS.md project instructions"
-    }
-
-    fn execute<'a>(
-        &self,
-        _raw_arg: Option<&str>,
-        ctx: &'a mut CommandContext,
-        messages: &'a mut Vec<Message>,
-    ) -> Pin<Box<dyn Future<Output = Result<CommandResult, String>> + Send + 'a>> {
+async_command!(
+    InitCommand,
+    "/init",
+    "Generate or update TINYHARNESS.md project instructions",
+    |_raw_arg, ctx, messages| {
         let provider = ctx.provider.clone();
         let workspace_ctx = ctx.workspace_ctx.clone();
-
-        Box::pin(async move {
+        async move {
             let mut p = provider.lock().await;
             let result = execute_init(&mut *p, &workspace_ctx, messages).await?;
             Ok(CommandResult::Init(result))
-        })
+        }
     }
-}
+);
 
 // ── Core implementation ─────────────────────────────────────────────────────
 

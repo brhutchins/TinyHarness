@@ -27,12 +27,12 @@ use crate::commands::{
     compact::CompactCommand,
     config_settings::{RetriesCommand, TimeoutCommand},
     init::InitCommand,
-    models::{ModelCommand, ModelsCommand},
+    models::ModelsCommand,
 };
 
 pub use files::FileContext;
 pub use init::InitResult;
-pub use registry::{AliasCommand, CommandContext, CommandRegistry, CommandResult};
+pub use registry::{CommandContext, CommandRegistry, CommandResult};
 
 /// Build the default command registry with all built-in commands.
 pub fn build_registry() -> CommandRegistry {
@@ -319,7 +319,12 @@ pub fn build_registry() -> CommandRegistry {
     // ── Async commands (need provider.lock().await) ────────────────────────
 
     reg.register(ModelsCommand);
-    reg.register(ModelCommand);
+    reg.register_alias(
+        "/model",
+        "/models",
+        None,
+        "Switch to a different model (alias for /models)",
+    );
     reg.register(CompactCommand);
     reg.register(InitCommand);
     reg.register(TimeoutCommand);

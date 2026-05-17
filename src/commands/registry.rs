@@ -136,17 +136,14 @@ impl CommandContext {
 
 /// A self-contained command definition.
 ///
-/// Each command implements this trait to provide its name, aliases, description,
+/// Each command implements this trait to provide its name, description,
 /// usage string, and execution logic. The registry dispatches user input to the
 /// appropriate `Command` implementation.
+///
+/// Aliases are registered separately via [`CommandRegistry::register_alias`].
 pub trait Command: Send + Sync {
     /// Primary name (e.g., "/help").
     fn name(&self) -> &'static str;
-
-    /// Aliases that also invoke this command (e.g., `["/quit"]` for exit).
-    fn aliases(&self) -> &'static [&'static str] {
-        &[]
-    }
 
     /// One-line description for /help.
     fn description(&self) -> &'static str;
@@ -186,7 +183,6 @@ where
     pub name_str: &'static str,
     pub description_str: &'static str,
     pub usage_str: &'static str,
-    pub aliases_str: &'static [&'static str],
     pub handler: F,
 }
 
@@ -198,10 +194,6 @@ where
 {
     fn name(&self) -> &'static str {
         self.name_str
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        self.aliases_str
     }
 
     fn description(&self) -> &'static str {
@@ -226,47 +218,66 @@ where
     }
 }
 
-// ── AliasCommand ─────────────────────────────────────────────────────────────
+// ── async_command! macro ─────────────────────────────────────────────────────
 
-/// A lightweight alias that delegates to another command with an optional fixed argument.
+/// Macro to define an async `Command` implementation with minimal boilerplate.
 ///
-/// For example, `/plan` is an alias for `/mode` with the fixed arg `"planning"`.
-pub struct AliasCommand {
-    pub alias_name: &'static str,
-    pub target_name: &'static str,
-    /// If set, this arg is passed to the target instead of the user's arg.
-    pub fixed_arg: Option<&'static str>,
-    pub description: &'static str,
-}
+/// Generates a unit struct and `impl Command` that:
+/// - Returns the given `name`, `description`, and optional `usage`
+/// - In `execute`, makes the provided bindings available and returns the async body
+///
+/// # Example
+/// ```ignore
+/// async_command!(TimeoutCommand, "/timeout", "Show or set timeout", "/timeout [secs]",
+///     |raw_arg, ctx, _messages| {
+///         let arg = raw_arg.unwrap_or("").to_string();
+///         let provider = ctx.provider.clone();
+///         async move {
+///             // ... async logic ...
+///             Ok(CommandResult::Ok)
+///         }
+///     }
+/// );
+/// ```
+#[macro_export]
+macro_rules! async_command {
+    // With explicit usage string
+    (
+        $(#[$meta:meta])*
+        $struct_name:ident, $name:literal, $desc:literal, $usage:literal,
+        |$raw_arg:ident, $ctx:ident, $messages:ident| $body:expr
+    ) => {
+        $(#[$meta])*
+        pub struct $struct_name;
 
-impl Command for AliasCommand {
-    fn name(&self) -> &'static str {
-        self.alias_name
-    }
+        impl $crate::commands::registry::Command for $struct_name {
+            fn name(&self) -> &'static str { $name }
+            fn description(&self) -> &'static str { $desc }
+            fn usage(&self) -> &'static str { $usage }
 
-    fn aliases(&self) -> &'static [&'static str] {
-        &[]
-    }
+            fn execute<'a>(
+                &'a self,
+                $raw_arg: Option<&str>,
+                $ctx: &'a mut $crate::commands::registry::CommandContext,
+                $messages: &'a mut Vec<tinyharness_lib::provider::Message>,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<$crate::commands::registry::CommandResult, String>> + Send + 'a>> {
+                Box::pin($body)
+            }
+        }
+    };
 
-    fn description(&self) -> &'static str {
-        self.description
-    }
-
-    fn usage(&self) -> &'static str {
-        self.alias_name
-    }
-
-    fn execute<'a>(
-        &self,
-        raw_arg: Option<&str>,
-        _ctx: &'a mut CommandContext,
-        _messages: &'a mut Vec<Message>,
-    ) -> Pin<Box<dyn Future<Output = Result<CommandResult, String>> + Send + 'a>> {
-        // Aliases are resolved by the registry's dispatch method.
-        // This method should never be called directly.
-        let _ = raw_arg;
-        Box::pin(async { Ok(CommandResult::Ok) })
-    }
+    // Without explicit usage (defaults to command name)
+    (
+        $(#[$meta:meta])*
+        $struct_name:ident, $name:literal, $desc:literal,
+        |$raw_arg:ident, $ctx:ident, $messages:ident| $body:expr
+    ) => {
+        async_command!(
+            $(#[$meta])*
+            $struct_name, $name, $desc, $name,
+            |$raw_arg, $ctx, $messages| $body
+        );
+    };
 }
 
 // ── CommandRegistry ──────────────────────────────────────────────────────────
@@ -279,6 +290,8 @@ pub struct CommandRegistry {
     aliases: HashMap<&'static str, &'static str>,
     /// Fixed args for aliases (alias → arg to pass instead of user input).
     alias_fixed_args: HashMap<&'static str, &'static str>,
+    /// Alias descriptions for /help display.
+    alias_descriptions: HashMap<&'static str, &'static str>,
 }
 
 impl Default for CommandRegistry {
@@ -293,20 +306,14 @@ impl CommandRegistry {
             commands: HashMap::new(),
             aliases: HashMap::new(),
             alias_fixed_args: HashMap::new(),
+            alias_descriptions: HashMap::new(),
         }
     }
 
     /// Register a command implementation.
-    /// Also registers any aliases the command declares.
     pub fn register(&mut self, cmd: impl Command + 'static) {
         let name = cmd.name();
-        let aliases = cmd.aliases();
         self.commands.insert(name, Box::new(cmd));
-
-        // Register aliases that point to the primary name
-        for alias in aliases {
-            self.aliases.insert(alias, name);
-        }
     }
 
     /// Register an alias for an existing command.
@@ -324,8 +331,7 @@ impl CommandRegistry {
         if let Some(arg) = fixed_arg {
             self.alias_fixed_args.insert(alias, arg);
         }
-        // Store the description so it appears in /help
-        let _ = description; // Used by command_descriptions()
+        self.alias_descriptions.insert(alias, description);
     }
 
     /// Register a synchronous command using a closure.
@@ -353,10 +359,9 @@ impl CommandRegistry {
             name_str: name,
             description_str: description,
             usage_str: name,
-            aliases_str: &[],
             handler,
         };
-        self.register(cmd);
+        self.commands.insert(name, Box::new(cmd));
     }
 
     /// Register a synchronous command with a custom usage string.
@@ -380,10 +385,9 @@ impl CommandRegistry {
             name_str: name,
             description_str: description,
             usage_str: usage,
-            aliases_str: &[],
             handler,
         };
-        self.register(cmd);
+        self.commands.insert(name, Box::new(cmd));
     }
 
     /// Parse user input and dispatch to the appropriate command handler.
@@ -446,13 +450,19 @@ impl CommandRegistry {
             .map(|cmd| (cmd.usage(), cmd.description()))
             .collect();
 
-        // Add alias entries
+        // Add alias entries with their custom descriptions
         for (&alias, &target) in &self.aliases {
-            if let Some(cmd) = self.commands.get(target) {
-                let desc = cmd.description();
-                // Check if this alias has a custom description stored
-                descs.push((alias, desc));
-            }
+            let desc = self
+                .alias_descriptions
+                .get(alias)
+                .copied()
+                .unwrap_or_else(|| {
+                    self.commands
+                        .get(target)
+                        .map(|cmd| cmd.description())
+                        .unwrap_or("")
+                });
+            descs.push((alias, desc));
         }
 
         descs.sort_by(|a, b| a.0.cmp(b.0));
