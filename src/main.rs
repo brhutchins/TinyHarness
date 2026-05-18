@@ -76,6 +76,7 @@ async fn create_provider(
             url,
             settings.ollama_timeout_secs,
             settings.ollama_max_retries,
+            settings.ollama_think_type,
         ))),
     };
 

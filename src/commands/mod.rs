@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 
 use crate::commands::{
     compact::CompactCommand,
-    config_settings::{RetriesCommand, TimeoutCommand},
+    config_settings::{RetriesCommand, ThinkCommand, TimeoutCommand},
     init::InitCommand,
     models::ModelsCommand,
 };
@@ -329,6 +329,7 @@ pub fn build_registry() -> CommandRegistry {
     reg.register(InitCommand);
     reg.register(TimeoutCommand);
     reg.register(RetriesCommand);
+    reg.register(ThinkCommand);
 
     // ── Aliases ───────────────────────────────────────────────────────────
 
