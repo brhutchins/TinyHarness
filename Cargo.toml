@@ -3,7 +3,7 @@ members = [".", "tinyharness-lib", "tinyharness-ui"]
 
 [package]
 name = "TinyHarness"
-version = "0.1.0"
+version = "0.1.1"
 license = "MIT"
 description = "tinyharness - ai coding harness"
 edition = "2024"
@@ -23,6 +23,7 @@ regex = "1.11.1"
 rustyline = { version = "18.0.0", features = ["derive"] }
 ctrlc = "3"
 chrono = "0.4.42"
+tracing-subscriber = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

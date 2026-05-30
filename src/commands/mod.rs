@@ -323,19 +323,19 @@ pub fn build_registry() -> CommandRegistry {
             let _ = writeln!(
                 ctx.output,
                 "{}Skill '{}' is not currently active.{}",
-                crate::style::ORANGE,
+                tinyharness_ui::style::ORANGE,
                 name,
-                crate::style::RESET
+                tinyharness_ui::style::RESET
             );
             if !ctx.active_skills.is_empty() {
                 let active = ctx.active_skills.join(", ");
                 let _ = writeln!(
                     ctx.output,
                     "{}Active skills: {}{}{}",
-                    crate::style::GRAY,
-                    crate::style::CYAN,
+                    tinyharness_ui::style::GRAY,
+                    tinyharness_ui::style::CYAN,
                     active,
-                    crate::style::RESET
+                    tinyharness_ui::style::RESET
                 );
             }
             Ok(CommandResult::Ok)

@@ -3,7 +3,7 @@ use std::io::Write;
 use tinyharness_lib::session::{SessionMeta, SessionStore, format_age};
 use tinyharness_ui::output::Output;
 
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 /// Format a session for display in the `/sessions` listing.
 fn format_session_list(sessions: &[SessionMeta], current_id: Option<&str>) -> String {

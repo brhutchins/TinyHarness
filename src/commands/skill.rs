@@ -4,7 +4,7 @@ use tinyharness_lib::skill::{SkillRegistry, SkillSource};
 use tinyharness_ui::output::Output;
 
 use crate::commands::registry::{CommandContext, CommandResult};
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 // ── Helper for /use and /skill use ──────────────────────────────────────────
 

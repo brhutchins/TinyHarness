@@ -2,7 +2,7 @@ use std::io::Write;
 
 use tinyharness_ui::output::Output;
 
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 pub fn execute(out: &mut Output, descriptions: &[(&'static str, &'static str)]) {
     let _ = writeln!(out, "\n{BOLD}Available commands:{RESET}");

@@ -1,7 +1,5 @@
 pub mod agent;
 pub mod commands;
-pub mod style;
-pub mod ui;
 
 use std::{
     error::Error,
@@ -24,8 +22,8 @@ use tinyharness_lib::{
 
 use crate::{agent::run_agent_loop, commands::CommandContext};
 use clap::Parser;
-use style::*;
 use tinyharness_ui::output::Output;
+use tinyharness_ui::style::*;
 use tokio::sync::Mutex;
 
 #[derive(clap::Parser, Debug)]
@@ -173,6 +171,13 @@ fn create_initial_session(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Initialize tracing: library code uses tracing::warn!/error! instead of
+    // direct eprintln!, so diagnostics are routed through the subscriber.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .init();
+
     // Install Ctrl+C handler: set an atomic flag that the agent loop checks
     // during streaming generation. This allows interrupting LLM responses
     // without terminating the process.

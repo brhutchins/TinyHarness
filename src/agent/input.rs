@@ -2,9 +2,9 @@ use std::io::Write;
 
 use rustyline::Editor;
 
-use crate::style::*;
-use crate::ui::input::CommandHelper;
-use crate::Output;
+use tinyharness_ui::output::Output;
+use tinyharness_ui::style::*;
+use tinyharness_ui::ui::input::CommandHelper;
 
 /// Read input from the user with support for multi-line continuation.
 ///

@@ -4,7 +4,7 @@ use tinyharness_lib::mode::AgentMode;
 use tinyharness_lib::provider::Message;
 
 use crate::commands::registry::{CommandContext, CommandResult};
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 /// Execute the /mode command.
 pub fn execute(

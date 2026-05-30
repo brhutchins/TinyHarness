@@ -5,7 +5,7 @@ use tinyharness_ui::output::Output;
 
 use crate::async_command;
 use crate::commands::registry::CommandResult;
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 // ── Command trait implementation ────────────────────────────────────────────
 

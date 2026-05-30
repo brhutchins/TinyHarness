@@ -3,7 +3,7 @@ use std::io::Write;
 use tinyharness_lib::provider::{Message, Role};
 use tinyharness_ui::output::Output;
 
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 /// Manages pinned files whose content is injected into the system prompt context.
 #[derive(Debug, Clone, Default)]

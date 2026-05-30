@@ -8,7 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tinyharness_ui::output::Output;
 
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 // ── Data types ──────────────────────────────────────────────────────────────
 

@@ -3,7 +3,7 @@ use std::io::Write;
 use tinyharness_lib::context::WorkspaceContext;
 use tinyharness_ui::output::Output;
 
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 pub fn execute(out: &mut Output, ctx: &WorkspaceContext) {
     let _ = writeln!(out, "\n{BOLD}Workspace Context:{RESET}");

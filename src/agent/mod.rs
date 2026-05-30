@@ -26,11 +26,9 @@ use tinyharness_lib::{
 };
 use tinyharness_ui::output::Output;
 
-use crate::style::*;
-use crate::{
-    commands::{CommandContext, CommandResult, build_registry, init},
-    ui::input::CommandHelper,
-};
+use crate::commands::{CommandContext, CommandResult, build_registry, init};
+use tinyharness_ui::style::*;
+use tinyharness_ui::ui::input::CommandHelper;
 
 pub use display::{
     format_args_summary, format_context_status, print_context_load_warning,
@@ -268,10 +266,7 @@ pub async fn run_agent_loop(
                 Ok(CommandResult::RenameSession(new_name)) => {
                     session.set_name(new_name.clone());
                     let mut err_out = Output::stderr();
-                    let _ = writeln!(
-                        err_out,
-                        "{BOLD}Session renamed to {BLUE}{new_name}{RESET}",
-                    );
+                    let _ = writeln!(err_out, "{BOLD}Session renamed to {BLUE}{new_name}{RESET}",);
                 }
                 Ok(CommandResult::Init(result)) => {
                     // Refresh workspace context since the project instruction file may have changed

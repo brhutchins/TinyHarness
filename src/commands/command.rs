@@ -5,7 +5,7 @@ use tinyharness_lib::config::{get_default_safe_commands, load_settings, save_set
 use tinyharness_ui::output::Output;
 
 use crate::commands::registry::CommandResult;
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 // ── Core implementation ─────────────────────────────────────────────────────
 

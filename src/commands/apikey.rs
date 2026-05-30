@@ -3,7 +3,7 @@ use std::io::Write;
 use tinyharness_lib::config::{load_settings, save_settings};
 use tinyharness_ui::output::Output;
 
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 pub fn execute_set(out: &mut Output, key: &str) {
     let mut settings = load_settings();

@@ -5,7 +5,7 @@ use tinyharness_lib::config::load_settings;
 use tinyharness_ui::output::Output;
 
 use crate::commands::registry::CommandResult;
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 pub fn execute(out: &mut Output, arg: Option<&str>) -> Result<CommandResult, String> {
     match arg {
