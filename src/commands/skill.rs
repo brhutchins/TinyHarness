@@ -1,6 +1,7 @@
 use std::io::Write;
 
 use tinyharness_lib::skill::{SkillRegistry, SkillSource};
+use tinyharness_ui::output::Output;
 
 use crate::commands::registry::{CommandContext, CommandResult};
 use crate::style::*;
@@ -11,9 +12,9 @@ pub fn handle_skill_use(name: &str, ctx: &mut CommandContext) -> Result<CommandR
     // Validate that the skill exists and is user-invocable
     match ctx.skill_registry.get(name) {
         Some(skill) if !skill.user_invocable => {
-            println!(
-                "{}Skill '{}' is not user-invocable.{} It can only be activated by the model.",
-                ORANGE, name, RESET
+            let _ = writeln!(
+                ctx.output,
+                "{ORANGE}Skill '{name}' is not user-invocable.{RESET} It can only be activated by the model.",
             );
             Ok(CommandResult::Ok)
         }
@@ -29,12 +30,15 @@ pub fn handle_skill_use(name: &str, ctx: &mut CommandContext) -> Result<CommandR
                 .map(|s| s.name.clone())
                 .collect::<Vec<_>>()
                 .join(", ");
-            println!(
-                "{}Skill '{}' not found.{} Use {}/skills{} to list available skills.",
-                RED, name, RESET, BOLD, RESET
+            let _ = writeln!(
+                ctx.output,
+                "{RED}Skill '{name}' not found.{RESET} Use {BOLD}/skills{RESET} to list available skills.",
             );
             if !available.is_empty() {
-                println!("{}Available skills: {}{}{}", GRAY, CYAN, available, RESET);
+                let _ = writeln!(
+                    ctx.output,
+                    "{GRAY}Available skills: {CYAN}{available}{RESET}",
+                );
             }
             Ok(CommandResult::Ok)
         }
@@ -44,79 +48,69 @@ pub fn handle_skill_use(name: &str, ctx: &mut CommandContext) -> Result<CommandR
 // ── Display functions ────────────────────────────────────────────────────────
 
 /// List all available skills, marking active ones.
-pub fn execute_list(registry: &SkillRegistry, active_skills: &[String]) {
+pub fn execute_list(out: &mut Output, registry: &SkillRegistry, active_skills: &[String]) {
     if registry.skills.is_empty() {
-        println!();
-        println!("{}No skills found.{}", ORANGE, RESET);
-        println!(
-            "{}Create skills in ~/.tinyharness/skills/<name>/SKILL.md{}",
-            GRAY, RESET
+        let _ = writeln!(out);
+        let _ = writeln!(out, "{ORANGE}No skills found.{RESET}");
+        let _ = writeln!(
+            out,
+            "{GRAY}Create skills in ~/.tinyharness/skills/<name>/SKILL.md{RESET}",
         );
-        println!(
-            "{}or in .tinyharness/skills/<name>/SKILL.md (project-local){}",
-            GRAY, RESET
+        let _ = writeln!(
+            out,
+            "{GRAY}or in .tinyharness/skills/<name>/SKILL.md (project-local){RESET}",
         );
-        println!();
+        let _ = writeln!(out);
         return;
     }
 
-    println!();
-    println!(
-        "{}╭─ Available Skills ───────────────────────────╮{}",
-        BOLD, RESET
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{BOLD}╭─ Available Skills ───────────────────────────╮{RESET}",
     );
 
     for skill in &registry.skills {
         let source_label = match skill.source {
-            SkillSource::Personal => format!("{}~{}", GRAY, RESET),
-            SkillSource::Project => format!("{}.{}", GRAY, RESET),
+            SkillSource::Personal => format!("{GRAY}~{RESET}"),
+            SkillSource::Project => format!("{GRAY}.{RESET}"),
         };
         let auto_label = if skill.disable_model_invocation {
-            format!("{}manual only{}", GRAY, RESET)
+            format!("{GRAY}manual only{RESET}")
         } else {
-            format!("{}auto{}", GREEN, RESET)
+            format!("{GREEN}auto{RESET}")
         };
         let active_marker = if active_skills
             .iter()
             .any(|s| s.eq_ignore_ascii_case(&skill.name))
         {
-            format!("{}●{}", GREEN, RESET)
+            format!("{GREEN}●{RESET}")
         } else {
-            format!("{}○{}", GRAY, RESET)
+            format!("{GRAY}○{RESET}")
         };
 
-        println!(
-            "{}│{} {} {}{}{}{} — {}  {}[{}]{}",
-            BOLD,
-            RESET,
-            active_marker,
-            BOLD,
-            CYAN,
+        let _ = writeln!(
+            out,
+            "{BOLD}│{RESET} {active_marker} {BOLD}{CYAN}{}{RESET} — {description}  {source_label}[{auto_label}]",
             skill.name,
-            RESET,
-            skill.description,
-            source_label,
-            auto_label,
-            RESET
+            description = skill.description,
         );
     }
 
-    println!(
-        "{}╰──────────────────────────────────────────────╯{}",
-        BOLD, RESET
+    let _ = writeln!(
+        out,
+        "{BOLD}╰──────────────────────────────────────────────╯{RESET}",
     );
 
     if !active_skills.is_empty() {
-        println!(
-            "  {}Active: {}{}{}",
-            GRAY,
-            GREEN,
+        let _ = writeln!(
+            out,
+            "  {GRAY}Active: {GREEN}{}{RESET}",
             active_skills.join(", "),
-            RESET
         );
     }
 
-    println!();
+    let _ = writeln!(out);
 }
 
 /// Show details for a specific skill.
@@ -131,8 +125,7 @@ pub fn execute_show<W: Write>(
         None => {
             writeln!(
                 stdout,
-                "{}Skill '{}' not found.{} Use {}/skills{} to list available skills.",
-                RED, name, RESET, BOLD, RESET
+                "{RED}Skill '{name}' not found.{RESET} Use {BOLD}/skills{RESET} to list available skills.",
             )
             .unwrap_or(());
             return;
@@ -147,38 +140,32 @@ pub fn execute_show<W: Write>(
     writeln!(stdout).unwrap_or(());
     writeln!(
         stdout,
-        "{}╭─ Skill: {}{}{} ──────────────────────────╮{}",
-        BOLD, CYAN, skill.name, BOLD, RESET
+        "{BOLD}╭─ Skill: {CYAN}{}{BOLD} ──────────────────────────╮{RESET}",
+        skill.name,
     )
     .unwrap_or(());
     writeln!(
         stdout,
-        "{}│{}   {}Description:{} {}",
-        BOLD, RESET, BOLD, RESET, skill.description
+        "{BOLD}│{RESET}   {BOLD}Description:{RESET} {}",
+        skill.description,
     )
     .unwrap_or(());
     writeln!(
         stdout,
-        "{}│{}   {}Source:{} {}",
-        BOLD, RESET, BOLD, RESET, source_label
+        "{BOLD}│{RESET}   {BOLD}Source:{RESET} {source_label}",
     )
     .unwrap_or(());
     writeln!(
         stdout,
-        "{}│{}   {}Path:{} {}",
-        BOLD,
-        RESET,
-        BOLD,
-        RESET,
-        skill.path.display()
+        "{BOLD}│{RESET}   {BOLD}Path:{RESET} {}",
+        skill.path.display(),
     )
     .unwrap_or(());
 
     if let Some(hint) = &skill.argument_hint {
         writeln!(
             stdout,
-            "{}│{}   {}Argument hint:{} {}",
-            BOLD, RESET, BOLD, RESET, hint
+            "{BOLD}│{RESET}   {BOLD}Argument hint:{RESET} {hint}",
         )
         .unwrap_or(());
     }
@@ -186,33 +173,23 @@ pub fn execute_show<W: Write>(
     if let Some(compat) = &skill.compatibility {
         writeln!(
             stdout,
-            "{}│{}   {}Compatibility:{} {}",
-            BOLD, RESET, BOLD, RESET, compat
+            "{BOLD}│{RESET}   {BOLD}Compatibility:{RESET} {compat}",
         )
         .unwrap_or(());
     }
 
     if let Some(lic) = &skill.license {
-        writeln!(
-            stdout,
-            "{}│{}   {}License:{} {}",
-            BOLD, RESET, BOLD, RESET, lic
-        )
-        .unwrap_or(());
+        writeln!(stdout, "{BOLD}│{RESET}   {BOLD}License:{RESET} {lic}",).unwrap_or(());
     }
 
     let auto_label = if skill.disable_model_invocation {
-        format!(
-            "{}Manual invocation only (model cannot auto-invoke){}",
-            ORANGE, RESET
-        )
+        format!("{ORANGE}Manual invocation only (model cannot auto-invoke){RESET}")
     } else {
-        format!("{}Model can auto-invoke this skill{}", GREEN, RESET)
+        format!("{GREEN}Model can auto-invoke this skill{RESET}")
     };
     writeln!(
         stdout,
-        "{}│{}   {}Auto-invoke:{} {}",
-        BOLD, RESET, BOLD, RESET, auto_label
+        "{BOLD}│{RESET}   {BOLD}Auto-invoke:{RESET} {auto_label}",
     )
     .unwrap_or(());
 
@@ -220,61 +197,61 @@ pub fn execute_show<W: Write>(
         .iter()
         .any(|s| s.eq_ignore_ascii_case(&skill.name))
     {
-        format!("{}● Active{}", GREEN, RESET)
+        format!("{GREEN}● Active{RESET}")
     } else {
-        format!("{}○ Inactive{}", GRAY, RESET)
+        format!("{GRAY}○ Inactive{RESET}")
     };
     writeln!(
         stdout,
-        "{}│{}   {}Status:{} {}",
-        BOLD, RESET, BOLD, RESET, active_label
+        "{BOLD}│{RESET}   {BOLD}Status:{RESET} {active_label}",
     )
     .unwrap_or(());
 
     writeln!(
         stdout,
-        "{}╰──────────────────────────────────────────────╯{}",
-        BOLD, RESET
+        "{BOLD}╰──────────────────────────────────────────────╯{RESET}",
     )
     .unwrap_or(());
 
     // Show the skill content
     if !skill.content.is_empty() {
         writeln!(stdout).unwrap_or(());
-        writeln!(stdout, "{}Skill instructions:{}", BOLD, RESET).unwrap_or(());
+        writeln!(stdout, "{BOLD}Skill instructions:{RESET}").unwrap_or(());
         writeln!(stdout).unwrap_or(());
         for line in skill.content.lines() {
-            writeln!(stdout, "  {}", line).unwrap_or(());
+            writeln!(stdout, "  {line}").unwrap_or(());
         }
         writeln!(stdout).unwrap_or(());
     }
 }
 
 /// Print help for the /skill command.
-pub fn execute_help() {
-    println!();
-    println!("{}Skill management — subcommands:{}", BOLD, RESET);
-    println!();
-    println!(
-        "  {}{:<16}{} List all available skills",
-        CYAN, "list", RESET
+pub fn execute_help(out: &mut Output) {
+    let _ = writeln!(out);
+    let _ = writeln!(out, "{BOLD}Skill management — subcommands:{RESET}");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  {CYAN}{0:<16}{RESET} List all available skills",
+        "list",
     );
-    println!(
-        "  {}{:<16}{} Show details and content of a skill",
-        CYAN, "<name>", RESET
+    let _ = writeln!(
+        out,
+        "  {CYAN}{0:<16}{RESET} Show details and content of a skill",
+        "<name>",
     );
-    println!();
-    println!(
-        "{}Tip:{} Use {}/use <name>{} to activate a skill, {}/unload <name>{} to deactivate it.",
-        GRAY, RESET, BOLD, RESET, BOLD, RESET
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{GRAY}Tip:{RESET} Use {BOLD}/use <name>{RESET} to activate a skill, {BOLD}/unload <name>{RESET} to deactivate it.",
     );
-    println!(
-        "      Skills are loaded from {}~/.tinyharness/skills/<name>/SKILL.md{} (personal)",
-        BOLD, RESET
+    let _ = writeln!(
+        out,
+        "      Skills are loaded from {BOLD}~/.tinyharness/skills/<name>/SKILL.md{RESET} (personal)",
     );
-    println!(
-        "      and {}.tinyharness/skills/<name>/SKILL.md{} (project-local).",
-        BOLD, RESET
+    let _ = writeln!(
+        out,
+        "      and {BOLD}.tinyharness/skills/<name>/SKILL.md{RESET} (project-local).",
     );
-    println!();
+    let _ = writeln!(out);
 }

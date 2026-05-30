@@ -164,7 +164,7 @@ pub fn build_registry() -> CommandRegistry {
     // ── Sessions ──────────────────────────────────────────────────────────
 
     reg.register_sync("/sessions", "List all saved sessions", |_arg, ctx, _msg| {
-        crate::commands::sessions::execute_list(ctx.session_id.as_deref());
+        crate::commands::sessions::execute_list(&mut ctx.output, ctx.session_id.as_deref());
         Ok(CommandResult::Ok)
     });
 
@@ -183,7 +183,11 @@ pub fn build_registry() -> CommandRegistry {
                     if id.is_empty() { None } else { Some(id) },
                     "/session delete <id|name> — use /sessions to list available sessions",
                 )?;
-                crate::commands::sessions::execute_delete(id, ctx.session_id.as_deref());
+                crate::commands::sessions::execute_delete(
+                    &mut ctx.output,
+                    id,
+                    ctx.session_id.as_deref(),
+                );
                 return Ok(CommandResult::Ok);
             }
             Ok(CommandResult::SwitchSession(a.to_string()))
@@ -248,7 +252,11 @@ pub fn build_registry() -> CommandRegistry {
     // ── Skills ────────────────────────────────────────────────────────────
 
     reg.register_sync("/skills", "List all available skills", |_arg, ctx, _msg| {
-        crate::commands::skill::execute_list(&ctx.skill_registry, &ctx.active_skills);
+        crate::commands::skill::execute_list(
+            &mut ctx.output,
+            &ctx.skill_registry,
+            &ctx.active_skills,
+        );
         Ok(CommandResult::Ok)
     });
 
@@ -259,24 +267,31 @@ pub fn build_registry() -> CommandRegistry {
         |arg, ctx, _msg| {
             let name = arg.unwrap_or("").to_string();
             if name.is_empty() {
-                crate::commands::skill::execute_list(&ctx.skill_registry, &ctx.active_skills);
+                crate::commands::skill::execute_list(
+                    &mut ctx.output,
+                    &ctx.skill_registry,
+                    &ctx.active_skills,
+                );
                 return Ok(CommandResult::Ok);
             }
             // Check for "use <name>" subcommand
             if let Some(skill_name) = name.strip_prefix("use ") {
                 let skill_name = skill_name.trim().to_string();
                 if skill_name.is_empty() {
-                    crate::commands::skill::execute_list(&ctx.skill_registry, &ctx.active_skills);
+                    crate::commands::skill::execute_list(
+                        &mut ctx.output,
+                        &ctx.skill_registry,
+                        &ctx.active_skills,
+                    );
                     return Ok(CommandResult::Ok);
                 }
                 return crate::commands::skill::handle_skill_use(&skill_name, ctx);
             }
-            let mut stdout = std::io::stdout();
             crate::commands::skill::execute_show(
                 &ctx.skill_registry,
                 &name,
                 &ctx.active_skills,
-                &mut stdout,
+                &mut ctx.output,
             );
             Ok(CommandResult::Ok)
         },
