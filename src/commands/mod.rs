@@ -155,8 +155,8 @@ pub fn build_registry() -> CommandRegistry {
         "/audit",
         "View command execution audit log",
         "/audit [last|session|clear]",
-        |arg, _ctx, _msg| {
-            crate::commands::audit::execute(arg.unwrap_or(""));
+        |arg, ctx, _msg| {
+            crate::commands::audit::execute(&mut ctx.output, arg.unwrap_or(""));
             Ok(CommandResult::Ok)
         },
     );
