@@ -16,6 +16,7 @@ pub mod sessions;
 pub mod settings;
 pub mod skill;
 
+use std::io::Write;
 use std::sync::Arc;
 
 use tinyharness_lib::{config::load_settings, context::WorkspaceContext, provider::Provider};
@@ -48,13 +49,13 @@ pub fn build_registry() -> CommandRegistry {
 
     // ── Sync commands (simple closures, no async needed) ──────────────────
 
-    reg.register_sync("/clear", "Clear the terminal screen", |_arg, _ctx, _msg| {
-        crate::commands::clear::execute();
+    reg.register_sync("/clear", "Clear the terminal screen", |_arg, ctx, _msg| {
+        crate::commands::clear::execute(&mut ctx.output);
         Ok(CommandResult::Ok)
     });
 
     reg.register_sync("/exit", "Exit the application", |_arg, ctx, _msg| {
-        crate::commands::exit::execute();
+        crate::commands::exit::execute(&mut ctx.output);
         ctx.exit_requested = true;
         Ok(CommandResult::Ok)
     });
@@ -63,7 +64,7 @@ pub fn build_registry() -> CommandRegistry {
         "/context",
         "Show the workspace context available to the agent",
         |_arg, ctx, _msg| {
-            crate::commands::context::execute(&ctx.workspace_ctx);
+            crate::commands::context::execute(&mut ctx.output, &ctx.workspace_ctx);
             Ok(CommandResult::Ok)
         },
     );
@@ -96,21 +97,21 @@ pub fn build_registry() -> CommandRegistry {
         "/settings",
         "Show current settings. Use 'all' to list all safe commands.",
         "/settings [all]",
-        |arg, _ctx, _msg| crate::commands::settings::execute(arg),
+        |arg, ctx, _msg| crate::commands::settings::execute(&mut ctx.output, arg),
     );
 
     reg.register_sync_with_usage(
         "/apikey",
         "Set or show the Ollama API key for web search. Use /apikey clear to remove it.",
         "/apikey [key]",
-        |arg, _ctx, _msg| {
+        |arg, ctx, _msg| {
             let a = arg.unwrap_or("");
             if a.is_empty() {
-                crate::commands::apikey::execute_show();
+                crate::commands::apikey::execute_show(&mut ctx.output);
             } else if a == "clear" {
-                crate::commands::apikey::execute_clear();
+                crate::commands::apikey::execute_clear(&mut ctx.output);
             } else {
-                crate::commands::apikey::execute_set(a);
+                crate::commands::apikey::execute_set(&mut ctx.output, a);
             }
             Ok(CommandResult::Ok)
         },
@@ -120,14 +121,16 @@ pub fn build_registry() -> CommandRegistry {
         "/contextlimit",
         "Show or set the context limit for warning calculations (default: model default)",
         "/contextlimit [tokens]",
-        |arg, _ctx, _msg| crate::commands::config_settings::execute_context_limit(arg),
+        |arg, ctx, _msg| {
+            crate::commands::config_settings::execute_context_limit(&mut ctx.output, arg)
+        },
     );
 
     reg.register_sync_with_usage(
         "/autoaccept",
         "Show or toggle auto-accept for safe read-only commands (default: on)",
         "/autoaccept [on|off]",
-        |arg, _ctx, _msg| crate::commands::config_settings::execute_autoaccept(arg),
+        |arg, ctx, _msg| crate::commands::config_settings::execute_autoaccept(&mut ctx.output, arg),
     );
 
     reg.register_sync_with_usage(
@@ -143,7 +146,7 @@ pub fn build_registry() -> CommandRegistry {
         "/command",
         "Manage auto-accepted and denied commands",
         "/command [list|add|rm|deny|undeny|reset|resetdeny|help]",
-        |arg, _ctx, _msg| crate::commands::command::execute(arg.unwrap_or("")),
+        |arg, ctx, _msg| crate::commands::command::execute(&mut ctx.output, arg.unwrap_or("")),
     );
 
     // ── Audit ──────────────────────────────────────────────────────────────
@@ -152,8 +155,8 @@ pub fn build_registry() -> CommandRegistry {
         "/audit",
         "View command execution audit log",
         "/audit [last|session|clear]",
-        |arg, _ctx, _msg| {
-            crate::commands::audit::execute(arg.unwrap_or(""));
+        |arg, ctx, _msg| {
+            crate::commands::audit::execute(&mut ctx.output, arg.unwrap_or(""));
             Ok(CommandResult::Ok)
         },
     );
@@ -161,7 +164,7 @@ pub fn build_registry() -> CommandRegistry {
     // ── Sessions ──────────────────────────────────────────────────────────
 
     reg.register_sync("/sessions", "List all saved sessions", |_arg, ctx, _msg| {
-        crate::commands::sessions::execute_list(ctx.session_id.as_deref());
+        crate::commands::sessions::execute_list(&mut ctx.output, ctx.session_id.as_deref());
         Ok(CommandResult::Ok)
     });
 
@@ -180,7 +183,11 @@ pub fn build_registry() -> CommandRegistry {
                     if id.is_empty() { None } else { Some(id) },
                     "/session delete <id|name> — use /sessions to list available sessions",
                 )?;
-                crate::commands::sessions::execute_delete(id, ctx.session_id.as_deref());
+                crate::commands::sessions::execute_delete(
+                    &mut ctx.output,
+                    id,
+                    ctx.session_id.as_deref(),
+                );
                 return Ok(CommandResult::Ok);
             }
             Ok(CommandResult::SwitchSession(a.to_string()))
@@ -195,7 +202,7 @@ pub fn build_registry() -> CommandRegistry {
         "/add <path>",
         |arg, ctx, msg| {
             let path = require_arg(arg, "/add <file_path> — e.g. /add src/main.rs")?;
-            crate::commands::files::execute_add(&mut ctx.file_context, path);
+            crate::commands::files::execute_add(&mut ctx.output, &mut ctx.file_context, path);
             ctx.refresh_system_prompt(msg);
             Ok(CommandResult::Ok)
         },
@@ -207,7 +214,7 @@ pub fn build_registry() -> CommandRegistry {
         "/drop <path>",
         |arg, ctx, msg| {
             let path = require_arg(arg, "/drop <file_path> — e.g. /drop src/main.rs")?;
-            crate::commands::files::execute_drop(&mut ctx.file_context, path);
+            crate::commands::files::execute_drop(&mut ctx.output, &mut ctx.file_context, path);
             ctx.refresh_system_prompt(msg);
             Ok(CommandResult::Ok)
         },
@@ -217,7 +224,7 @@ pub fn build_registry() -> CommandRegistry {
         "/files",
         "List all pinned files in context",
         |_arg, ctx, _msg| {
-            crate::commands::files::execute_list(&ctx.file_context);
+            crate::commands::files::execute_list(&mut ctx.output, &ctx.file_context);
             Ok(CommandResult::Ok)
         },
     );
@@ -226,7 +233,7 @@ pub fn build_registry() -> CommandRegistry {
         "/dropall",
         "Remove all pinned files from context",
         |_arg, ctx, msg| {
-            crate::commands::files::execute_clear(&mut ctx.file_context);
+            crate::commands::files::execute_clear(&mut ctx.output, &mut ctx.file_context);
             ctx.refresh_system_prompt(msg);
             Ok(CommandResult::Ok)
         },
@@ -236,7 +243,7 @@ pub fn build_registry() -> CommandRegistry {
         "/refresh",
         "Re-read all pinned files from disk (updates content)",
         |_arg, ctx, msg| {
-            crate::commands::files::execute_refresh(&mut ctx.file_context);
+            crate::commands::files::execute_refresh(&mut ctx.output, &mut ctx.file_context);
             ctx.refresh_system_prompt(msg);
             Ok(CommandResult::Ok)
         },
@@ -245,7 +252,11 @@ pub fn build_registry() -> CommandRegistry {
     // ── Skills ────────────────────────────────────────────────────────────
 
     reg.register_sync("/skills", "List all available skills", |_arg, ctx, _msg| {
-        crate::commands::skill::execute_list(&ctx.skill_registry, &ctx.active_skills);
+        crate::commands::skill::execute_list(
+            &mut ctx.output,
+            &ctx.skill_registry,
+            &ctx.active_skills,
+        );
         Ok(CommandResult::Ok)
     });
 
@@ -256,24 +267,31 @@ pub fn build_registry() -> CommandRegistry {
         |arg, ctx, _msg| {
             let name = arg.unwrap_or("").to_string();
             if name.is_empty() {
-                crate::commands::skill::execute_list(&ctx.skill_registry, &ctx.active_skills);
+                crate::commands::skill::execute_list(
+                    &mut ctx.output,
+                    &ctx.skill_registry,
+                    &ctx.active_skills,
+                );
                 return Ok(CommandResult::Ok);
             }
             // Check for "use <name>" subcommand
             if let Some(skill_name) = name.strip_prefix("use ") {
                 let skill_name = skill_name.trim().to_string();
                 if skill_name.is_empty() {
-                    crate::commands::skill::execute_list(&ctx.skill_registry, &ctx.active_skills);
+                    crate::commands::skill::execute_list(
+                        &mut ctx.output,
+                        &ctx.skill_registry,
+                        &ctx.active_skills,
+                    );
                     return Ok(CommandResult::Ok);
                 }
                 return crate::commands::skill::handle_skill_use(&skill_name, ctx);
             }
-            let mut stdout = std::io::stdout();
             crate::commands::skill::execute_show(
                 &ctx.skill_registry,
                 &name,
                 &ctx.active_skills,
-                &mut stdout,
+                &mut ctx.output,
             );
             Ok(CommandResult::Ok)
         },
@@ -300,26 +318,27 @@ pub fn build_registry() -> CommandRegistry {
                 .iter()
                 .any(|s| s.eq_ignore_ascii_case(name))
             {
-                Ok(CommandResult::SkillUnload(name.to_string()))
-            } else {
-                println!(
-                    "{}Skill '{}' is not currently active.{}",
-                    crate::style::ORANGE,
-                    name,
-                    crate::style::RESET
-                );
-                if !ctx.active_skills.is_empty() {
-                    let active = ctx.active_skills.join(", ");
-                    println!(
-                        "{}Active skills: {}{}{}",
-                        crate::style::GRAY,
-                        crate::style::CYAN,
-                        active,
-                        crate::style::RESET
-                    );
-                }
-                Ok(CommandResult::Ok)
+                return Ok(CommandResult::SkillUnload(name.to_string()));
             }
+            let _ = writeln!(
+                ctx.output,
+                "{}Skill '{}' is not currently active.{}",
+                tinyharness_ui::style::ORANGE,
+                name,
+                tinyharness_ui::style::RESET
+            );
+            if !ctx.active_skills.is_empty() {
+                let active = ctx.active_skills.join(", ");
+                let _ = writeln!(
+                    ctx.output,
+                    "{}Active skills: {}{}{}",
+                    tinyharness_ui::style::GRAY,
+                    tinyharness_ui::style::CYAN,
+                    active,
+                    tinyharness_ui::style::RESET
+                );
+            }
+            Ok(CommandResult::Ok)
         },
     );
 
@@ -367,14 +386,10 @@ pub fn build_registry() -> CommandRegistry {
 
     reg.freeze_descriptions();
     let descs = reg.descriptions().to_vec();
-    reg.register_sync(
-        "/help",
-        "Show this help message",
-        move |_arg, _ctx, _msg| {
-            crate::commands::help::execute(&descs);
-            Ok(CommandResult::Ok)
-        },
-    );
+    reg.register_sync("/help", "Show this help message", move |_arg, ctx, _msg| {
+        crate::commands::help::execute(&mut ctx.output, &descs);
+        Ok(CommandResult::Ok)
+    });
 
     reg
 }

@@ -6,7 +6,7 @@ use tinyharness_lib::{
     token::{ContextWindowSize, check_context_warning, format_token_count},
 };
 
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 /// Print a warning if the loaded session's conversation has many messages.
 ///
@@ -148,12 +148,12 @@ pub fn print_conversation_history<W: Write>(
                         summary = summary
                     )?;
                 } else {
-                    crate::ui::wrap::write_wrapped_lines(
+                    tinyharness_ui::ui::wrap::write_wrapped_lines(
                         stdout,
                         result_body,
                         &format!("{BG_DIM}      "),
                         &format!("      {BG_DIM}{DIM}"),
-                        crate::ui::wrap::MAX_LINE_WIDTH,
+                        tinyharness_ui::ui::wrap::MAX_LINE_WIDTH,
                         true,
                     )?;
                 }

@@ -331,11 +331,7 @@ fn discover_skills_from_dir(dir: &Path, source: SkillSource) -> Result<Vec<Skill
         let content = match std::fs::read_to_string(&skill_file) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!(
-                    "Warning: Failed to read skill file {}: {}",
-                    skill_file.display(),
-                    e
-                );
+                tracing::warn!("Failed to read skill file {}: {e}", skill_file.display(),);
                 continue;
             }
         };
@@ -343,11 +339,7 @@ fn discover_skills_from_dir(dir: &Path, source: SkillSource) -> Result<Vec<Skill
         match parse_skill_md(&content, &skill_file, source) {
             Ok(skill) => skills.push(skill),
             Err(e) => {
-                eprintln!(
-                    "Warning: Failed to parse skill file {}: {}",
-                    skill_file.display(),
-                    e
-                );
+                tracing::warn!("Failed to parse skill file {}: {e}", skill_file.display(),);
                 continue;
             }
         }

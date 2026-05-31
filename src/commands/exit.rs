@@ -1,5 +1,9 @@
-use crate::style::*;
+use std::io::Write;
 
-pub fn execute() {
-    println!("{}Goodbye!{}", ORANGE, RESET);
+use tinyharness_ui::output::Output;
+
+use tinyharness_ui::style::*;
+
+pub fn execute(out: &mut Output) {
+    let _ = writeln!(out, "{ORANGE}Goodbye!{RESET}");
 }

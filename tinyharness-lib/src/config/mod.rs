@@ -279,7 +279,7 @@ impl SettingsStore {
     /// startup where you don't want to fail on corrupt settings files.
     pub fn load_or_default(&self) -> Settings {
         self.load().unwrap_or_else(|e| {
-            eprintln!("Warning: Failed to load settings: {}. Using defaults.", e);
+            tracing::warn!("Failed to load settings: {e}. Using defaults.");
             Settings::default()
         })
     }
@@ -329,7 +329,7 @@ pub fn load_settings() -> Settings {
 pub fn save_settings(settings: &Settings) {
     let store = SettingsStore::default_path();
     if let Err(e) = store.save(settings) {
-        eprintln!("Warning: Failed to save settings: {}", e);
+        tracing::warn!("Failed to save settings: {e}");
     }
 }
 
@@ -373,10 +373,9 @@ pub fn ensure_prompts_initialized() -> PathBuf {
             let default_text = mode.default_system_prompt();
             // Write the default, trimming leading/trailing whitespace/newlines
             if let Err(e) = std::fs::write(&file_path, default_text.trim()) {
-                eprintln!(
-                    "Warning: Failed to write default prompt to {}: {}",
+                tracing::warn!(
+                    "Failed to write default prompt to {}: {e}",
                     file_path.display(),
-                    e
                 );
             }
         }

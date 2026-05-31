@@ -13,8 +13,8 @@ use tinyharness_lib::{
 
 use crate::commands::CommandContext;
 use crate::commands::compact::execute_compact;
-use crate::style::*;
-use crate::ui::confirm::Confirmation;
+use tinyharness_ui::style::*;
+use tinyharness_ui::ui::confirm::Confirmation;
 
 use super::safety::is_safe_command;
 
@@ -266,7 +266,7 @@ fn confirm_tool_call<W: Write>(
         return Ok((true, true));
     }
 
-    match crate::ui::confirm::prompt_tool_confirmation(stdout, call)? {
+    match tinyharness_ui::ui::confirm::prompt_tool_confirmation(stdout, call)? {
         Confirmation::No => {
             stdout.write_all(format!("  {}Skipped{}{}\n", ORANGE, RESET, BOLD).as_bytes())?;
             stdout.flush()?;
@@ -466,12 +466,12 @@ async fn execute_generic_tool<W: Write>(
                     duration = format_duration(duration_ms),
                 )
                 .unwrap();
-                crate::ui::wrap::write_wrapped_lines(
+                tinyharness_ui::ui::wrap::write_wrapped_lines(
                     stdout,
                     &result,
                     &format!("{BG_DIM}      "),
                     &format!("      {BG_DIM}{DIM}"),
-                    crate::ui::wrap::MAX_LINE_WIDTH,
+                    tinyharness_ui::ui::wrap::MAX_LINE_WIDTH,
                     true, // fill background to end of line
                 )
                 .unwrap();
@@ -707,7 +707,7 @@ async fn handle_auto_compact<W: Write>(
 
     let mut provider_guard = provider.lock().await;
 
-    match execute_compact(&mut *provider_guard, messages, focus).await {
+    match execute_compact(&mut ctx.output, &mut *provider_guard, messages, focus).await {
         Ok(token_usage) => {
             // Propagate token usage the same way /compact does:
             // 1) store in CommandContext so the agent loop updates the display

@@ -6,8 +6,9 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use tinyharness_ui::output::Output;
 
-use crate::style::*;
+use tinyharness_ui::style::*;
 
 // ── Data types ──────────────────────────────────────────────────────────────
 
@@ -85,7 +86,7 @@ pub fn log_command(
         .append(true)
         .open(audit_log_path())
     {
-        let _ = writeln!(file, "{}", line);
+        let _ = writeln!(file, "{line}");
     }
 }
 
@@ -147,31 +148,31 @@ fn format_timestamp(ts: u64) -> String {
 }
 
 /// Display the last N audit entries in a table.
-pub fn show_last(n: usize) {
+pub fn show_last(out: &mut Output, n: usize) {
     let entries = read_last(n);
 
     if entries.is_empty() {
-        println!("{}No audit entries found.{}", ORANGE, RESET);
+        let _ = writeln!(out, "{ORANGE}No audit entries found.{RESET}");
         return;
     }
 
-    println!("\n{}Recent command audit (last {}):{}\n", BOLD, n, RESET);
+    let _ = writeln!(out, "\n{BOLD}Recent command audit (last {n}):{RESET}\n");
 
     // Header
-    println!(
-        "  {}{:20}  {:6}  {:26}  {:6}  {:8}  {:10}{}",
-        BOLD, "Timestamp", "Tool", "Command", "Exit", "Auto?", "Duration", RESET
+    let _ = writeln!(
+        out,
+        "  {BOLD}{:20}  {:6}  {:26}  {:6}  {:8}  {:10}{RESET}",
+        "Timestamp", "Tool", "Command", "Exit", "Auto?", "Duration",
     );
-    println!(
-        "  {}{:20}  {:6}  {:26}  {:6}  {:8}  {:10}{}",
-        GRAY,
+    let _ = writeln!(
+        out,
+        "  {GRAY}{:20}  {:6}  {:26}  {:6}  {:8}  {:10}{RESET}",
         "────────────────────",
         "──────",
         "──────────────────────────",
         "──────",
         "────────",
         "──────────",
-        RESET
     );
 
     for entry in &entries {
@@ -188,66 +189,61 @@ pub fn show_last(n: usize) {
         };
 
         let exit_str = if entry.exit_code == 0 {
-            format!("{}{:6}{}", GREEN, entry.exit_code, RESET)
+            format!("{GREEN}{:6}{RESET}", entry.exit_code)
         } else {
-            format!("{}{:6}{}", RED, entry.exit_code, RESET)
+            format!("{RED}{:6}{RESET}", entry.exit_code)
         };
 
         let auto_str = if entry.auto_accepted {
-            format!("{}✓ yes{}   ", GREEN, RESET)
+            format!("{GREEN}✓ yes{RESET}   ")
         } else {
-            format!("{}✗ no{}    ", ORANGE, RESET)
+            format!("{ORANGE}✗ no{RESET}    ")
         };
 
         let duration_str = if entry.duration_ms >= 1000 {
-            format!(
-                "{}{:.1}s{}    ",
-                BLUE,
-                entry.duration_ms as f64 / 1000.0,
-                RESET
-            )
+            format!("{BLUE}{:.1}s{RESET}    ", entry.duration_ms as f64 / 1000.0)
         } else {
-            format!("{}{}ms{}     ", GRAY, entry.duration_ms, RESET)
+            format!("{GRAY}{}ms{RESET}     ", entry.duration_ms)
         };
 
-        println!(
-            "  {}{}  {}{}{}  {}  {}  {}  {}",
-            GRAY, ts_str, CYAN, tool_display, RESET, cmd_display, exit_str, auto_str, duration_str
+        let _ = writeln!(
+            out,
+            "  {GRAY}{ts_str}  {CYAN}{tool_display}{RESET}  {cmd_display}  {exit_str}  {auto_str}  {duration_str}",
         );
     }
 
-    println!();
+    let _ = writeln!(out);
 }
 
 /// Display audit entries for a specific session.
-pub fn show_session(session_id: &str) {
+pub fn show_session(out: &mut Output, session_id: &str) {
     let entries = read_session(session_id);
 
     if entries.is_empty() {
-        println!(
-            "{}No audit entries found for session '{}'.{}",
-            ORANGE, session_id, RESET
+        let _ = writeln!(
+            out,
+            "{ORANGE}No audit entries found for session '{session_id}'.{RESET}",
         );
         return;
     }
 
-    println!("\n{}Audit for session '{}':{}\n", BOLD, session_id, RESET);
+    let _ = writeln!(out, "\n{BOLD}Audit for session '{session_id}':{RESET}\n");
 
     // Header
-    println!(
-        "  {}{:20}  {:6}  {:26}  {:6}  {:8}  {:10}{}",
-        BOLD, "Timestamp", "Tool", "Command", "Exit", "Auto?", "Duration", RESET
+    let _ = writeln!(
+        out,
+        "  {BOLD}{:20}  {:6}  {:26}  {:6}  {:8}  {:10}{RESET}",
+        "Timestamp", "Tool", "Command", "Exit", "Auto?", "Duration",
     );
-    println!(
-        "  {}{:20}  {:6}  {:26}  {:6}  {:8}  {:10}{}",
-        GRAY,
+    let _ = writeln!(
+        out,
+        "  {GRAY}{:20}  {:6}  {:26}  {:6}  {:8}  {:10}{RESET}",
         "────────────────────",
         "──────",
         "──────────────────────────",
         "──────",
         "────────",
         "──────────",
-        RESET
     );
 
     for entry in &entries {
@@ -264,44 +260,39 @@ pub fn show_session(session_id: &str) {
         };
 
         let exit_str = if entry.exit_code == 0 {
-            format!("{}{:6}{}", GREEN, entry.exit_code, RESET)
+            format!("{GREEN}{:6}{RESET}", entry.exit_code)
         } else {
-            format!("{}{:6}{}", RED, entry.exit_code, RESET)
+            format!("{RED}{:6}{RESET}", entry.exit_code)
         };
 
         let auto_str = if entry.auto_accepted {
-            format!("{}✓ yes{}   ", GREEN, RESET)
+            format!("{GREEN}✓ yes{RESET}   ")
         } else {
-            format!("{}✗ no{}    ", ORANGE, RESET)
+            format!("{ORANGE}✗ no{RESET}    ")
         };
 
         let duration_str = if entry.duration_ms >= 1000 {
-            format!(
-                "{}{:.1}s{}    ",
-                BLUE,
-                entry.duration_ms as f64 / 1000.0,
-                RESET
-            )
+            format!("{BLUE}{:.1}s{RESET}    ", entry.duration_ms as f64 / 1000.0)
         } else {
-            format!("{}{}ms{}     ", GRAY, entry.duration_ms, RESET)
+            format!("{GRAY}{}ms{RESET}     ", entry.duration_ms)
         };
 
-        println!(
-            "  {}{}  {}{}{}  {}  {}  {}  {}",
-            GRAY, ts_str, CYAN, tool_display, RESET, cmd_display, exit_str, auto_str, duration_str
+        let _ = writeln!(
+            out,
+            "  {GRAY}{ts_str}  {CYAN}{tool_display}{RESET}  {cmd_display}  {exit_str}  {auto_str}  {duration_str}",
         );
     }
 
-    println!();
+    let _ = writeln!(out);
 }
 
 /// Execute the /audit command.
-pub fn execute(args: &str) {
+pub fn execute(out: &mut Output, args: &str) {
     let args = args.trim();
 
     if args.is_empty() {
         // Default: show last 20
-        show_last(20);
+        show_last(out, 20);
         return;
     }
 
@@ -312,40 +303,44 @@ pub fn execute(args: &str) {
                 .get(1)
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(20);
-            show_last(n);
+            show_last(out, n);
         }
         "session" => {
             let session_id = parts.get(1).unwrap_or(&"");
             if session_id.is_empty() {
-                println!("{}Usage: /audit session <id>{}", ORANGE, RESET);
+                let _ = writeln!(out, "{ORANGE}Usage: /audit session <id>{RESET}");
                 return;
             }
-            show_session(session_id);
+            show_session(out, session_id);
         }
         "clear" => {
-            println!(
-                "{}⚠ This will delete the entire audit log. Type 'yes' to confirm: {}",
-                ORANGE, RESET
+            let _ = writeln!(
+                out,
+                "{ORANGE}⚠ This will delete the entire audit log. Type 'yes' to confirm: {RESET}",
             );
-            print!("{}> {}", BOLD, RESET);
-            io::stdout().flush().unwrap();
+            let _ = write!(out, "{BOLD}> {RESET}");
+            let _ = out.flush();
 
             let mut input = String::new();
             if io::stdin().read_line(&mut input).is_ok() && input.trim().to_lowercase() == "yes" {
                 match clear() {
-                    Ok(()) => println!("{}✓ Audit log cleared.{}", GREEN, RESET),
-                    Err(e) => println!("{}✗ Failed to clear audit log: {}{}", RED, e, RESET),
+                    Ok(()) => {
+                        let _ = writeln!(out, "{GREEN}✓ Audit log cleared.{RESET}");
+                    }
+                    Err(e) => {
+                        let _ = writeln!(out, "{RED}✗ Failed to clear audit log: {e}{RESET}");
+                    }
                 }
             } else {
-                println!("{}✗ Cancelled.{}", GRAY, RESET);
+                let _ = writeln!(out, "{GRAY}✗ Cancelled.{RESET}");
             }
         }
         _ => {
-            println!("{}Usage:{}", ORANGE, RESET);
-            println!("  /audit              - Show last 20 commands");
-            println!("  /audit last <n>     - Show last N commands");
-            println!("  /audit session <id> - Show commands from a session");
-            println!("  /audit clear        - Delete the audit log");
+            let _ = writeln!(out, "{ORANGE}Usage:{RESET}");
+            let _ = writeln!(out, "  /audit              - Show last 20 commands");
+            let _ = writeln!(out, "  /audit last <n>     - Show last N commands");
+            let _ = writeln!(out, "  /audit session <id> - Show commands from a session");
+            let _ = writeln!(out, "  /audit clear        - Delete the audit log");
         }
     }
 }
