@@ -77,7 +77,12 @@ impl ToolManager {
     pub fn tools_for_mode(&self, mode: AgentMode) -> Vec<ToolDefinition> {
         match mode {
             AgentMode::Agent => self.get_all_tool_definitions(),
-            AgentMode::Casual => Vec::new(),
+            AgentMode::Casual => self
+                .tools
+                .iter()
+                .filter(|t| t.name == "web_search" || t.name == "web_fetch")
+                .map(|t| t.to_definition())
+                .collect(),
             AgentMode::Planning => self
                 .tools
                 .iter()

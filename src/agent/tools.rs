@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 
 use tinyharness_lib::{
     config::load_settings,
+    image::ImageAttachment,
     mode::AgentMode,
     provider::{Message, Role, ToolCall},
     session::Session,
@@ -30,6 +31,8 @@ struct GenericToolResult {
     duration_ms: u64,
     /// Whether the tool returned an error.
     is_error: bool,
+    /// Images loaded by the tool (e.g. when reading an image file).
+    images: Vec<ImageAttachment>,
 }
 
 /// Handle tool calls from the assistant response.
@@ -198,18 +201,24 @@ pub async fn handle_tool_calls<W: Write>(
     // Batch all generic tool results into a single message
     if !generic_tool_results.is_empty() {
         let batched_content = if generic_tool_results.len() == 1 {
-            generic_tool_results.into_iter().next().unwrap().content
+            generic_tool_results[0].content.clone()
         } else {
             format!(
                 "Multiple tool results ({} total):\n\n{}",
                 generic_tool_results.len(),
                 generic_tool_results
-                    .into_iter()
-                    .map(|r| r.content)
+                    .iter()
+                    .map(|r| r.content.as_str())
                     .collect::<Vec<_>>()
                     .join("\n\n---\n\n")
             )
         };
+
+        // Collect images from all tool results (e.g. read tool on image files)
+        let all_images: Vec<ImageAttachment> = generic_tool_results
+            .into_iter()
+            .flat_map(|r| r.images)
+            .collect();
 
         messages.push(Message {
             role: Role::Tool,
@@ -218,7 +227,7 @@ pub async fn handle_tool_calls<W: Write>(
                 batched_content
             ),
             tool_calls: vec![],
-            images: vec![],
+            images: all_images,
         });
         session.append_message(messages.last().expect("just pushed a message"));
     }
@@ -514,12 +523,41 @@ async fn execute_generic_tool<W: Write>(
     };
     let is_error = result.starts_with("Error:");
 
+    // For read tool on image files, load the image data for the model to view.
+    // The read tool prefixes image results with "[IMAGE] path" so we can detect them.
+    let images = if call.function.name == "read" && result.starts_with("[IMAGE]") {
+        let image_path = result
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("[IMAGE] "))
+            .unwrap_or("");
+        if !image_path.is_empty() {
+            match ImageAttachment::load_from_str(image_path) {
+                Ok(img) => {
+                    // Also populate dimensions if the read tool detected them
+                    let mut img = img;
+                    if img.dimensions.is_none() {
+                        img.dimensions =
+                            tinyharness_lib::tools::read::detect_image_dimensions(image_path);
+                    }
+                    vec![img]
+                }
+                Err(_) => vec![],
+            }
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+
     GenericToolResult {
         content: format!("### {} Tool Result\n\n{}", call.function.name, result),
         audit_tool_name,
         audit_detail,
         duration_ms,
         is_error,
+        images,
     }
 }
 
