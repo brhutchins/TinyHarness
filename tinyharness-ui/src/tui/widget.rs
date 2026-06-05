@@ -1,0 +1,121 @@
+// ── Widget trait and action types ─────────────────────────────────────────────
+//
+// All TUI widgets implement the `Widget` trait, which provides a `render`
+// method (draw to a screen buffer) and an `handle_event` method (process
+// input events and optionally return an action).
+
+use super::cell::Color;
+use super::event::Event;
+use super::layout::Rect;
+use super::screen::Screen;
+
+// ── Action type ─────────────────────────────────────────────────────────────
+
+/// Actions that a widget can request from the application.
+///
+/// When a widget handles an event, it can optionally return an action
+/// that the application should perform (e.g., sending a message,
+/// switching modes, or quitting).
+#[derive(Clone, Debug)]
+pub enum Action {
+    /// Send a message to the AI (user pressed Enter in the input bar).
+    SendMessage(String),
+    /// Switch to a different agent mode.
+    SwitchMode(String),
+    /// Scroll the conversation up.
+    ScrollUp,
+    /// Scroll the conversation down.
+    ScrollDown,
+    /// Scroll the conversation up by a page.
+    PageUp,
+    /// Scroll the conversation down by a page.
+    PageDown,
+    /// Toggle sidebar visibility.
+    ToggleSidebar,
+    /// Toggle between CLI and TUI mode.
+    ToggleMode,
+    /// Quit the application.
+    Quit,
+    /// No action — the event was handled internally.
+    None,
+}
+
+// ── Widget trait ─────────────────────────────────────────────────────────────
+
+/// A UI widget that can render itself to a screen buffer and handle events.
+///
+/// Widgets are the building blocks of the TUI. Each widget owns its own
+/// state and can render itself into a rectangular area of the screen.
+pub trait Widget {
+    /// Render the widget into the given area of the screen buffer.
+    ///
+    /// This method should not write to the terminal directly. Instead, it
+    /// writes cells to the screen buffer, which is then diff-rendered.
+    fn render(&mut self, area: Rect, screen: &mut Screen);
+
+    /// Handle an event and optionally return an action.
+    ///
+    /// Only the focused widget receives events. Other widgets should
+    /// return `Action::None`.
+    fn handle_event(&mut self, event: &Event) -> Action {
+        let _ = event;
+        Action::None
+    }
+
+    /// Whether this widget currently has keyboard focus.
+    fn focused(&self) -> bool {
+        false
+    }
+
+    /// Set whether this widget has keyboard focus.
+    fn set_focus(&mut self, _focused: bool) {}
+}
+
+// ── Helper functions for widgets ─────────────────────────────────────────────
+
+/// Style presets commonly used across widgets.
+pub mod styles {
+    use super::Color;
+
+    /// Status bar background and text colors.
+    pub const STATUS_BAR_FG: Color = Color::WHITE;
+    pub const STATUS_BAR_BG: Color = Color::Ansi(236);
+
+    /// Input bar background and text colors.
+    pub const INPUT_BAR_FG: Color = Color::WHITE;
+    pub const INPUT_BAR_BG: Color = Color::Ansi(235);
+
+    /// Sidebar background and text colors.
+    pub const SIDEBAR_FG: Color = Color::Ansi(252); // light gray
+    pub const SIDEBAR_BG: Color = Color::Ansi(234); // dark gray
+    pub const SIDEBAR_BORDER: Color = Color::Ansi(240); // medium gray
+
+    /// Conversation text colors.
+    pub const USER_MSG_FG: Color = Color::GREEN;
+    pub const ASSISTANT_MSG_FG: Color = Color::WHITE;
+    pub const TOOL_MSG_FG: Color = Color::Ansi(14); // bright cyan
+    pub const THINKING_FG: Color = Color::Ansi(97); // dimmer magenta
+
+    /// Scrollbar colors.
+    pub const SCROLLBAR_FG: Color = Color::Ansi(244); // gray
+    pub const SCROLLBAR_BG: Color = Color::Default;
+
+    /// Mode label colors (matching existing CLI).
+    pub const MODE_CASUAL_FG: Color = Color::GREEN;
+    pub const MODE_PLANNING_FG: Color = Color::YELLOW;
+    pub const MODE_AGENT_FG: Color = Color::CYAN;
+    pub const MODE_RESEARCH_FG: Color = Color::ORANGE;
+
+    /// Box drawing characters.
+    pub const BOX_HORIZONTAL: char = '─';
+    pub const BOX_VERTICAL: char = '│';
+    pub const BOX_TOP_LEFT: char = '┌';
+    pub const BOX_TOP_RIGHT: char = '┐';
+    pub const BOX_BOTTOM_LEFT: char = '└';
+    pub const BOX_BOTTOM_RIGHT: char = '┘';
+    pub const BOX_LEFT_TEE: char = '├';
+    pub const BOX_RIGHT_TEE: char = '┤';
+    pub const BOX_TOP_TEE: char = '┬';
+    pub const BOX_BOTTOM_TEE: char = '┴';
+    pub const BOX_CROSS: char = '┼';
+}

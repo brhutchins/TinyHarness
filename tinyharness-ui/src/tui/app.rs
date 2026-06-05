@@ -1,0 +1,1136 @@
+// ── TUI Application Loop ──────────────────────────────────────────────────────
+//
+// The main TUI application that owns all widgets, handles the event loop,
+// renders frames, and diff-updates the terminal.
+
+use std::io::{self, Read, Write};
+use std::sync::mpsc;
+use std::time::Duration;
+
+use super::TuiAgentEvent;
+use super::backend::Backend;
+use super::event::{Event, EventParser, Key, KeyEvent, Modifiers, MouseEvent};
+use super::layout::{Constraint, Direction, Layout, Rect};
+use super::screen::Screen;
+use super::terminal::Terminal;
+use super::widget::{Action, Widget};
+use super::widgets::conversation::{ConversationLine, ConversationWidget};
+use super::widgets::input_bar::InputBarWidget;
+use super::widgets::sidebar::SidebarWidget;
+use super::widgets::spinner::SpinnerWidget;
+use super::widgets::status_bar::StatusBarWidget;
+use super::widgets::tool_output::{ToolOutputWidget, ToolResult, ToolStatus};
+
+// ── Focus management ────────────────────────────────────────────────────────
+
+/// Which widget currently has keyboard focus.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Focus {
+    #[default]
+    InputBar,
+    Conversation,
+    ToolOutput,
+    Sidebar,
+}
+
+// ── Application state ────────────────────────────────────────────────────────
+
+/// State exposed to the outside world (agent loop integration).
+#[derive(Clone, Debug)]
+pub struct TuiState {
+    /// Current agent mode label.
+    pub mode: String,
+    /// Current model name.
+    pub model_name: String,
+    /// Whether the sidebar is visible.
+    pub sidebar_visible: bool,
+    /// Whether we're currently streaming a response.
+    pub streaming: bool,
+    /// Token usage info.
+    pub token_count: Option<u64>,
+    /// Token limit.
+    pub token_limit: Option<u64>,
+    /// Session name.
+    pub session_name: String,
+    /// Message count.
+    pub message_count: usize,
+}
+
+impl Default for TuiState {
+    fn default() -> Self {
+        Self {
+            mode: "agent".to_string(),
+            model_name: String::new(),
+            sidebar_visible: true,
+            streaming: false,
+            token_count: None,
+            token_limit: None,
+            session_name: "unnamed".to_string(),
+            message_count: 0,
+        }
+    }
+}
+
+// ── TUI Application ──────────────────────────────────────────────────────────
+
+/// The main TUI application.
+///
+/// Owns all widgets and manages the event/render loop. The application
+/// reads events from a channel (fed by a stdin reader thread), routes
+/// them to the appropriate widget, and renders the screen using diff-based
+/// updates for flicker-free rendering.
+///
+/// It also receives `TuiAgentEvent` messages from a background agent task
+/// (streaming text, tool calls, status updates) and sends `TuiUserAction`
+/// messages back to the agent task (user input, confirmations).
+pub struct TuiApp<B: Backend> {
+    terminal: Terminal<B>,
+    screen: Screen,
+    prev_screen: Screen,
+
+    // Widgets
+    status_bar: StatusBarWidget,
+    conversation: ConversationWidget,
+    sidebar: SidebarWidget,
+    input_bar: InputBarWidget,
+    tool_output: ToolOutputWidget,
+    spinner: SpinnerWidget,
+
+    // State
+    focus: Focus,
+    state: TuiState,
+    running: bool,
+
+    // Agent integration channels
+    /// Channel to send user actions to the background agent task.
+    user_action_tx: mpsc::Sender<super::TuiUserAction>,
+    /// Channel to receive agent events from the background agent task.
+    agent_event_rx: mpsc::Receiver<TuiAgentEvent>,
+
+    // Streaming state
+    /// Text accumulated during the current streaming response.
+    streaming_text: String,
+    /// Whether we're currently in streaming mode (receiving chunks from the agent).
+    is_streaming: bool,
+    /// Whether we're currently in a thinking phase (receiving thinking chunks).
+    is_thinking: bool,
+    /// Accumulated thinking text for the current thinking phase.
+    thinking_text: String,
+}
+
+impl<B: Backend> TuiApp<B> {
+    /// Create a new TUI application.
+    ///
+    /// Takes channels for communicating with the background agent task.
+    /// The `user_action_tx` channel is used to send user actions (messages,
+    /// confirmations) to the agent. The `agent_event_rx` channel receives
+    /// agent events (streaming text, tool calls) for display.
+    pub fn new(
+        terminal: Terminal<B>,
+        user_action_tx: mpsc::Sender<super::TuiUserAction>,
+        agent_event_rx: mpsc::Receiver<TuiAgentEvent>,
+    ) -> io::Result<Self> {
+        let size = terminal.size();
+        let width = size.cols;
+        let height = size.rows;
+
+        Ok(TuiApp {
+            terminal,
+            screen: Screen::new(width, height),
+            prev_screen: Screen::new(width, height),
+
+            status_bar: StatusBarWidget::new("agent", "unknown"),
+            conversation: ConversationWidget::new(),
+            sidebar: SidebarWidget::new(),
+            input_bar: InputBarWidget::new("agent", "unknown"),
+            tool_output: ToolOutputWidget::new(),
+            spinner: SpinnerWidget::new("thinking"),
+
+            focus: Focus::InputBar,
+            state: TuiState::default(),
+            running: true,
+
+            user_action_tx,
+            agent_event_rx,
+
+            streaming_text: String::new(),
+            is_streaming: false,
+            is_thinking: false,
+            thinking_text: String::new(),
+        })
+    }
+
+    /// Get a reference to the application state.
+    pub fn state(&self) -> &TuiState {
+        &self.state
+    }
+
+    /// Get a mutable reference to the application state.
+    pub fn state_mut(&mut self) -> &mut TuiState {
+        &mut self.state
+    }
+
+    // ── Widget accessors ─────────────────────────────────────────────────
+
+    /// Get a reference to the conversation widget.
+    pub fn conversation(&self) -> &ConversationWidget {
+        &self.conversation
+    }
+
+    /// Get a mutable reference to the conversation widget.
+    pub fn conversation_mut(&mut self) -> ConversationMut<'_> {
+        ConversationMut(&mut self.conversation)
+    }
+
+    /// Get a mutable reference to the sidebar widget.
+    pub fn sidebar_mut(&mut self) -> &mut SidebarWidget {
+        &mut self.sidebar
+    }
+
+    /// Get a mutable reference to the tool output widget.
+    pub fn tool_output_mut(&mut self) -> &mut ToolOutputWidget {
+        &mut self.tool_output
+    }
+
+    /// Get a mutable reference to the status bar widget.
+    pub fn status_bar_mut(&mut self) -> &mut StatusBarWidget {
+        &mut self.status_bar
+    }
+
+    // ── Update helpers ───────────────────────────────────────────────────
+
+    /// Update all widgets from the current state.
+    pub fn sync_from_state(&mut self) {
+        self.status_bar
+            .update_labels(&self.state.mode, &self.state.model_name);
+        self.status_bar.set_session_name(&self.state.session_name);
+        self.status_bar.set_message_count(self.state.message_count);
+        if let Some(count) = self.state.token_count {
+            self.status_bar
+                .set_token_count(count, self.state.token_limit);
+        }
+        self.status_bar.set_streaming(self.state.streaming);
+
+        self.input_bar
+            .update_labels(&self.state.mode, &self.state.model_name);
+        self.sidebar.visible = self.state.sidebar_visible;
+    }
+
+    /// Add a user message to the conversation.
+    pub fn push_user_message(&mut self, text: &str) {
+        self.conversation.push(ConversationLine::User {
+            text: text.to_string(),
+        });
+        self.state.message_count += 1;
+    }
+
+    /// Add an assistant message to the conversation.
+    pub fn push_assistant_message(&mut self, text: &str) {
+        self.conversation.push(ConversationLine::Assistant {
+            text: text.to_string(),
+        });
+    }
+
+    /// Add a tool call to the conversation.
+    pub fn push_tool_call(&mut self, name: &str, args_summary: &str) {
+        self.conversation.push(ConversationLine::ToolCall {
+            name: name.to_string(),
+            args_summary: args_summary.to_string(),
+        });
+    }
+
+    /// Add a tool result to both the conversation and the tool output widget.
+    pub fn push_tool_result(&mut self, name: &str, content: &str, is_error: bool) {
+        self.conversation.push(ConversationLine::ToolResult {
+            name: name.to_string(),
+            content: content.to_string(),
+            is_error,
+        });
+        self.tool_output.push(ToolResult {
+            name: name.to_string(),
+            args_summary: String::new(),
+            content: content.to_string(),
+            is_error,
+            collapsed: true,
+            status: if is_error {
+                ToolStatus::Error {
+                    message: content.to_string(),
+                }
+            } else {
+                ToolStatus::Success { duration_ms: 0 }
+            },
+        });
+    }
+
+    /// Add a system message to the conversation.
+    pub fn push_system_message(&mut self, text: &str) {
+        self.conversation.push(ConversationLine::System {
+            text: text.to_string(),
+        });
+    }
+
+    /// Add a thinking chain to the conversation.
+    pub fn push_thinking(&mut self, text: &str) {
+        self.conversation.push(ConversationLine::Thinking {
+            text: text.to_string(),
+        });
+    }
+
+    /// Add a separator line to the conversation.
+    pub fn push_separator(&mut self) {
+        self.conversation.push(ConversationLine::Separator);
+    }
+
+    /// Set the streaming state (shows/hides spinner).
+    pub fn set_streaming(&mut self, streaming: bool) {
+        self.state.streaming = streaming;
+        self.status_bar.set_streaming(streaming);
+    }
+
+    // ── Layout ───────────────────────────────────────────────────────────
+
+    /// Compute the layout for the current terminal size.
+    fn compute_layout(&self) -> (Rect, Rect, Rect, Rect, Rect) {
+        let size = self.terminal.size();
+        let total = Rect::new(0, 0, size.cols, size.rows);
+
+        // Vertical split: status bar | main area | input bar
+        let vertical = Layout::new(Direction::Vertical).constraints(vec![
+            Constraint::Length(1),       // status bar
+            Constraint::Percentage(100), // main area (takes remaining)
+            Constraint::Length(3),       // input bar
+        ]);
+        let vertical_areas = vertical.split(total);
+        let status_area = vertical_areas[0];
+        let main_area = vertical_areas[1];
+        let input_area = vertical_areas[2];
+
+        if self.state.sidebar_visible {
+            // Horizontal split of main area: conversation | sidebar
+            let horizontal = Layout::new(Direction::Horizontal).constraints(vec![
+                Constraint::Percentage(100), // conversation
+                Constraint::Length(25),      // sidebar
+            ]);
+            let horizontal_areas = horizontal.split(main_area);
+            let conv_area = horizontal_areas[0];
+            let sidebar_area = horizontal_areas[1];
+
+            (status_area, conv_area, sidebar_area, input_area, main_area)
+        } else {
+            // No sidebar — conversation takes the full main area
+            (
+                status_area,
+                main_area,
+                Rect::new(0, 0, 0, 0),
+                input_area,
+                main_area,
+            )
+        }
+    }
+
+    // ── Event handling ────────────────────────────────────────────────────
+
+    /// Handle a single event and return any action.
+    fn handle_event(&mut self, event: &Event) -> Action {
+        // Global keybindings (always active regardless of focus)
+        if let Event::Key(key) = event {
+            match key {
+                // Ctrl+C: quit (or interrupt streaming)
+                KeyEvent {
+                    key: Key::Char('c'),
+                    modifiers,
+                } if modifiers.ctrl => {
+                    if self.state.streaming {
+                        // Interrupt streaming
+                        self.set_streaming(false);
+                        return Action::None;
+                    }
+                    return Action::Quit;
+                }
+                // Ctrl+D: quit
+                KeyEvent {
+                    key: Key::Char('d'),
+                    modifiers,
+                } if modifiers.ctrl => {
+                    return Action::Quit;
+                }
+                // Ctrl+S: toggle sidebar
+                KeyEvent {
+                    key: Key::Char('s'),
+                    modifiers,
+                } if modifiers.ctrl => {
+                    self.state.sidebar_visible = !self.state.sidebar_visible;
+                    return Action::ToggleSidebar;
+                }
+                // Tab: cycle focus forward
+                KeyEvent {
+                    key: Key::Tab,
+                    modifiers: Modifiers { shift: false, .. },
+                } => {
+                    self.cycle_focus(true);
+                    return Action::None;
+                }
+                // Shift+Tab: cycle focus backward
+                KeyEvent {
+                    key: Key::BackTab, ..
+                } => {
+                    self.cycle_focus(false);
+                    return Action::None;
+                }
+                // F1: focus conversation
+                KeyEvent { key: Key::F(1), .. } => {
+                    self.set_focus(Focus::Conversation);
+                    return Action::None;
+                }
+                // F2: focus tool output (not yet used in main layout)
+                KeyEvent { key: Key::F(2), .. } => {
+                    self.set_focus(Focus::ToolOutput);
+                    return Action::None;
+                }
+                // F3: focus sidebar
+                KeyEvent { key: Key::F(3), .. } => {
+                    self.set_focus(Focus::Sidebar);
+                    return Action::None;
+                }
+                _ => {}
+            }
+        }
+
+        // Resize events
+        if let Event::Resize { cols, rows } = event {
+            self.screen.resize(*cols, *rows);
+            self.prev_screen.resize(*cols, *rows);
+            return Action::None;
+        }
+
+        // Mouse scroll events always go to the conversation widget
+        if let Event::Mouse(MouseEvent::ScrollUp { .. }) = event {
+            self.conversation.scroll_up(3);
+            return Action::None;
+        }
+        if let Event::Mouse(MouseEvent::ScrollDown { .. }) = event {
+            self.conversation.scroll_down(3);
+            return Action::None;
+        }
+
+        // Scroll-related key events always go to the conversation widget
+        if let Event::Key(key) = event {
+            match key {
+                KeyEvent {
+                    key: Key::PageUp, ..
+                } => {
+                    self.conversation.scroll_up(20);
+                    return Action::None;
+                }
+                KeyEvent {
+                    key: Key::PageDown, ..
+                } => {
+                    self.conversation.scroll_down(20);
+                    return Action::None;
+                }
+                KeyEvent { key: Key::Home, .. } => {
+                    self.conversation.scroll_home();
+                    return Action::None;
+                }
+                KeyEvent { key: Key::End, .. } => {
+                    self.conversation.scroll_to_bottom();
+                    return Action::None;
+                }
+                KeyEvent {
+                    key: Key::Up,
+                    modifiers,
+                } if modifiers.alt => {
+                    self.conversation.scroll_up(3);
+                    return Action::None;
+                }
+                KeyEvent {
+                    key: Key::Down,
+                    modifiers,
+                } if modifiers.alt => {
+                    self.conversation.scroll_down(3);
+                    return Action::None;
+                }
+                _ => {}
+            }
+        }
+
+        // Route other events to focused widget
+        match self.focus {
+            Focus::InputBar => {
+                let action = self.input_bar.handle_event(event);
+                if matches!(action, Action::SendMessage(_)) {
+                    self.conversation.scroll_to_bottom();
+                }
+                action
+            }
+            Focus::Conversation => self.conversation.handle_event(event),
+            Focus::ToolOutput => self.tool_output.handle_event(event),
+            Focus::Sidebar => self.sidebar.handle_event(event),
+        }
+    }
+
+    /// Cycle focus between widgets.
+    fn cycle_focus(&mut self, forward: bool) {
+        let order = [Focus::InputBar, Focus::Conversation, Focus::Sidebar];
+        let current = order.iter().position(|&f| f == self.focus).unwrap_or(0);
+        let next = if forward {
+            (current + 1) % order.len()
+        } else {
+            (current + order.len() - 1) % order.len()
+        };
+        self.set_focus(order[next]);
+    }
+
+    /// Set focus to a specific widget.
+    fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+        self.input_bar.set_focus(focus == Focus::InputBar);
+    }
+
+    // ── Rendering ────────────────────────────────────────────────────────
+
+    /// Render all widgets to the screen buffer.
+    fn render_frame(&mut self) {
+        let (status_area, conv_area, sidebar_area, input_area, _main_area) = self.compute_layout();
+
+        // Clear the screen
+        self.screen.clear();
+
+        // Render widgets
+        self.status_bar.render(status_area, &mut self.screen);
+        self.conversation.render(conv_area, &mut self.screen);
+        if self.state.sidebar_visible && !sidebar_area.is_empty() {
+            self.sidebar.render(sidebar_area, &mut self.screen);
+        }
+        self.input_bar.render(input_area, &mut self.screen);
+
+        // Render spinner if streaming
+        if self.state.streaming {
+            // Put spinner in the bottom-right of the conversation area
+            let spinner_area = Rect::new(
+                conv_area.x + conv_area.width.saturating_sub(8),
+                conv_area.y + conv_area.height.saturating_sub(1),
+                8,
+                1,
+            );
+            self.spinner.render(spinner_area, &mut self.screen);
+        }
+    }
+
+    /// Diff the current screen against the previous frame and write changes.
+    fn flush_diff(&mut self) -> io::Result<()> {
+        let width = self.screen.width();
+        let height = self.screen.height();
+
+        let mut last_pos: Option<(u16, u16)> = None;
+
+        for row in 0..height {
+            for col in 0..width {
+                let curr = self.screen.get(row, col);
+                let prev = self.prev_screen.get(row, col);
+
+                if curr != prev {
+                    // Move cursor if not adjacent
+                    if last_pos != Some((row, col.saturating_sub(1))) {
+                        write!(self.terminal, "\x1b[{};{}H", row + 1, col + 1)?;
+                    }
+
+                    // Write the cell
+                    let cell = curr.unwrap();
+                    // Apply foreground color
+                    write!(self.terminal, "{}", cell.fg.fg_escape())?;
+                    // Apply background color
+                    write!(self.terminal, "{}", cell.bg.bg_escape())?;
+                    // Apply style
+                    if cell.style.bold {
+                        write!(self.terminal, "\x1b[1m")?;
+                    }
+                    if cell.style.dim {
+                        write!(self.terminal, "\x1b[2m")?;
+                    }
+                    if cell.style.italic {
+                        write!(self.terminal, "\x1b[3m")?;
+                    }
+                    if cell.style.underline {
+                        write!(self.terminal, "\x1b[4m")?;
+                    }
+                    // Write character
+                    if cell.char != '\0' {
+                        write!(self.terminal, "{}", cell.char)?;
+                    } else {
+                        write!(self.terminal, " ")?;
+                    }
+                    // Reset style
+                    write!(self.terminal, "\x1b[0m")?;
+
+                    last_pos = Some((row, col));
+                }
+            }
+        }
+
+        // Swap buffers
+        std::mem::swap(&mut self.screen, &mut self.prev_screen);
+
+        self.terminal.flush()?;
+        Ok(())
+    }
+
+    // ── Main loop ────────────────────────────────────────────────────────
+
+    /// Run the TUI event loop.
+    ///
+    /// This method takes ownership and blocks until the user quits.
+    /// It reads events from the provided receiver (which should be fed
+    /// by a stdin reader thread), and also processes events from the
+    /// background agent task (streaming text, tool calls, etc.).
+    pub fn run(&mut self, event_rx: mpsc::Receiver<Event>) -> io::Result<()> {
+        // Enter raw mode and alternate screen
+        self.terminal.enter_raw_mode()?;
+        self.terminal.enter_alternate_screen()?;
+        self.terminal.hide_cursor()?;
+        self.terminal.enable_mouse()?;
+        self.terminal.enable_bracketed_paste()?;
+
+        // Initial render
+        self.render_frame();
+        self.flush_diff()?;
+        // Copy screen to prev after first render
+        self.prev_screen = self.screen.clone();
+
+        while self.running {
+            // Poll for UI events with a short timeout for smooth animation
+            let event = event_rx.recv_timeout(Duration::from_millis(50));
+
+            match event {
+                Ok(ev) => {
+                    let action = self.handle_event(&ev);
+                    self.handle_action(action);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // No UI event
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Stdin event source closed — exit
+                    break;
+                }
+            }
+
+            // Process all pending agent events (non-blocking)
+            while let Ok(agent_event) = self.agent_event_rx.try_recv() {
+                self.handle_agent_event(agent_event);
+            }
+
+            // Update spinner animation
+            if self.state.streaming {
+                self.spinner.tick();
+            }
+
+            // Render and flush
+            self.render_frame();
+            self.flush_diff()?;
+        }
+
+        // Cleanup
+        self.terminal.disable_bracketed_paste()?;
+        self.terminal.disable_mouse()?;
+        self.terminal.show_cursor()?;
+        self.terminal.leave_alternate_screen()?;
+        self.terminal.leave_raw_mode()?;
+
+        Ok(())
+    }
+
+    /// Handle an action returned by a widget.
+    fn handle_action(&mut self, action: Action) {
+        match action {
+            Action::Quit => {
+                self.running = false;
+                let _ = self.user_action_tx.send(super::TuiUserAction::Quit);
+            }
+            Action::SendMessage(text) => {
+                self.push_user_message(&text);
+                // Send the message to the background agent task
+                let _ = self
+                    .user_action_tx
+                    .send(super::TuiUserAction::SendMessage(text));
+            }
+            Action::ToggleSidebar => {
+                self.state.sidebar_visible = !self.state.sidebar_visible;
+            }
+            Action::SwitchMode(mode) => {
+                self.state.mode = mode;
+                self.sync_from_state();
+            }
+            Action::ScrollUp => {
+                self.conversation.scroll_up(3);
+            }
+            Action::ScrollDown => {
+                self.conversation.scroll_down(3);
+            }
+            Action::PageUp => {
+                self.conversation.scroll_up(20);
+            }
+            Action::PageDown => {
+                self.conversation.scroll_down(20);
+            }
+            Action::ToggleMode | Action::None => {}
+        }
+    }
+
+    /// Process an agent event received from the background task.
+    fn handle_agent_event(&mut self, event: TuiAgentEvent) {
+        match event {
+            TuiAgentEvent::StreamingStarted => {
+                self.is_streaming = true;
+                self.streaming_text.clear();
+                self.is_thinking = true;
+                self.thinking_text.clear();
+                self.spinner.set_label("Thinking");
+                self.spinner.start();
+                self.set_streaming(true);
+                // Push a placeholder thinking line that will be updated
+                self.conversation.push(ConversationLine::Thinking {
+                    text: String::new(),
+                });
+            }
+            TuiAgentEvent::StreamingText(text) => {
+                // If we were thinking, finalize the thinking block first
+                if self.is_thinking {
+                    self.is_thinking = false;
+                    // Update the thinking line with accumulated text
+                    if let Some(ConversationLine::Thinking { text: t }) =
+                        self.conversation.last_mut()
+                    {
+                        *t = self.thinking_text.clone();
+                    }
+                    self.thinking_text.clear();
+                    self.spinner.set_label("Responding");
+                }
+                self.streaming_text.push_str(&text);
+                // Update the last assistant message or add a new one
+                self.update_streaming_assistant_message();
+            }
+            TuiAgentEvent::StreamingThinking(text) => {
+                self.thinking_text.push_str(&text);
+                self.is_thinking = true;
+                // Update the thinking indicator in the conversation
+                if let Some(ConversationLine::Thinking { text: t }) = self.conversation.last_mut() {
+                    // Show a brief preview of thinking content
+                    let preview = if self.thinking_text.len() > 80 {
+                        format!("{}…", &self.thinking_text[..78])
+                    } else {
+                        self.thinking_text.clone()
+                    };
+                    *t = preview;
+                }
+            }
+            TuiAgentEvent::StreamingDone => {
+                // Finalize thinking if still active
+                if self.is_thinking {
+                    self.is_thinking = false;
+                    if let Some(ConversationLine::Thinking { text: t }) =
+                        self.conversation.last_mut()
+                    {
+                        *t = self.thinking_text.clone();
+                    }
+                    self.thinking_text.clear();
+                }
+                // Finalize the streaming text as a complete assistant message
+                if !self.streaming_text.is_empty() {
+                    // The streaming text was already being displayed incrementally
+                    // via update_streaming_assistant_message, so just finalize
+                    self.streaming_text.clear();
+                }
+                self.is_streaming = false;
+                self.spinner.stop();
+                self.set_streaming(false);
+            }
+            TuiAgentEvent::Error(msg) => {
+                // Finalize thinking if still active
+                if self.is_thinking {
+                    self.is_thinking = false;
+                    if let Some(ConversationLine::Thinking { text: t }) =
+                        self.conversation.last_mut()
+                    {
+                        *t = self.thinking_text.clone();
+                    }
+                    self.thinking_text.clear();
+                }
+                self.push_system_message(&format!("⚠ Error: {}", msg));
+                self.is_streaming = false;
+                self.spinner.stop();
+                self.set_streaming(false);
+            }
+            TuiAgentEvent::ToolCall { name, args_summary } => {
+                self.push_tool_call(&name, &args_summary);
+            }
+            TuiAgentEvent::ToolResult {
+                name,
+                content,
+                is_error,
+            } => {
+                self.push_tool_result(&name, &content, is_error);
+            }
+            TuiAgentEvent::ModeChanged(mode) => {
+                self.state.mode = mode;
+                self.sync_from_state();
+            }
+            TuiAgentEvent::ModelChanged(model) => {
+                self.state.model_name = model;
+                self.sync_from_state();
+            }
+            TuiAgentEvent::TokenUpdate { count, limit } => {
+                self.state.token_count = Some(count);
+                self.state.token_limit = limit;
+                self.status_bar.set_token_count(count, limit);
+            }
+            TuiAgentEvent::SystemMessage(msg) => {
+                self.push_system_message(&msg);
+            }
+            TuiAgentEvent::ConfirmTool {
+                name,
+                args_summary,
+                needs_approval: _,
+            } => {
+                // For now, auto-approve in TUI mode. A future improvement
+                // could show an inline confirmation dialog.
+                let _ = self
+                    .user_action_tx
+                    .send(super::TuiUserAction::ConfirmResponse {
+                        approved: true,
+                        auto_accept: false,
+                    });
+                self.push_system_message(&format!("Auto-approved: {} {}", name, args_summary));
+            }
+            TuiAgentEvent::Question { question, answers } => {
+                // Show the question in the conversation and auto-select the first answer.
+                // A future improvement could show an inline selection UI.
+                let options: Vec<String> = answers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| format!("{}. {}", i + 1, a))
+                    .collect();
+                let display = format!("❓ {} [{}]", question, options.join(", "));
+                self.push_system_message(&display);
+                // Auto-select first answer
+                if let Some(first) = answers.first() {
+                    let _ = self
+                        .user_action_tx
+                        .send(super::TuiUserAction::QuestionAnswer(first.clone()));
+                }
+            }
+            TuiAgentEvent::Done => {
+                // Finalize thinking if still active
+                if self.is_thinking {
+                    self.is_thinking = false;
+                    if let Some(ConversationLine::Thinking { text: t }) =
+                        self.conversation.last_mut()
+                    {
+                        *t = self.thinking_text.clone();
+                    }
+                    self.thinking_text.clear();
+                }
+                self.is_streaming = false;
+                self.spinner.stop();
+                self.set_streaming(false);
+            }
+        }
+    }
+
+    /// Update the streaming assistant message in the conversation widget.
+    ///
+    /// If the last conversation line is an assistant message being streamed,
+    /// update its text. Otherwise, add a new assistant message.
+    fn update_streaming_assistant_message(&mut self) {
+        // Check if the last line is an assistant message we can update
+        if self.conversation.last_is_assistant() && self.is_streaming {
+            // Update the last assistant message with accumulated streaming text
+            if let Some(ConversationLine::Assistant { text }) = self.conversation.last_mut() {
+                *text = self.streaming_text.clone();
+            }
+        } else {
+            // Add a new assistant message
+            self.conversation.push(ConversationLine::Assistant {
+                text: self.streaming_text.clone(),
+            });
+        }
+    }
+}
+
+// ── RAII guard for terminal state ────────────────────────────────────────────
+
+/// RAII guard that ensures the terminal is restored when dropped,
+/// even if the TUI crashes or panics.
+pub struct TuiGuard<B: Backend> {
+    terminal: Option<Terminal<B>>,
+}
+
+impl<B: Backend> TuiGuard<B> {
+    /// Create a guard from a terminal. The terminal will be restored
+    /// when the guard is dropped.
+    pub fn new(terminal: Terminal<B>) -> Self {
+        Self {
+            terminal: Some(terminal),
+        }
+    }
+
+    /// Take the terminal out of the guard, releasing the restore obligation.
+    pub fn take(mut self) -> Terminal<B> {
+        self.terminal.take().unwrap()
+    }
+}
+
+impl<B: Backend> Drop for TuiGuard<B> {
+    fn drop(&mut self) {
+        if let Some(ref mut terminal) = self.terminal {
+            let _ = terminal.disable_bracketed_paste();
+            let _ = terminal.disable_mouse();
+            let _ = terminal.show_cursor();
+            let _ = terminal.leave_alternate_screen();
+            let _ = terminal.leave_raw_mode();
+        }
+    }
+}
+
+// ── Conversation mut helper (newtype to avoid lifetime issues) ───────────────
+
+/// A helper that provides mutable access to the conversation widget.
+pub struct ConversationMut<'a>(pub &'a mut ConversationWidget);
+
+// ── Stdin event reader ───────────────────────────────────────────────────────
+
+/// Spawns a background thread that reads raw bytes from stdin and parses
+/// them into events, sending them through a channel.
+pub fn spawn_stdin_reader() -> (mpsc::Sender<Event>, mpsc::Receiver<Event>) {
+    let (tx, rx) = mpsc::channel();
+    let tx_clone = tx.clone();
+
+    std::thread::spawn(move || {
+        let mut parser = EventParser::new();
+        let mut buf = [0u8; 64];
+
+        loop {
+            match std::io::stdin().read(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    parser.feed(&buf[..n]);
+                    while let Some(event) = parser.parse() {
+                        if tx.send(event).is_err() {
+                            return; // Receiver dropped
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    (tx_clone, rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::backend::TestBackend;
+    use crate::tui::terminal::Size;
+
+    fn make_app() -> TuiApp<TestBackend> {
+        let backend = TestBackend::new(Size::new(80, 24));
+        let terminal = Terminal::new(backend).unwrap();
+        let (user_action_tx, _user_action_rx) = mpsc::channel();
+        let (_, agent_event_rx) = mpsc::channel();
+        TuiApp::new(terminal, user_action_tx, agent_event_rx).unwrap()
+    }
+
+    #[test]
+    fn test_app_new() {
+        let app = make_app();
+        assert!(app.running);
+        assert_eq!(app.focus, Focus::InputBar);
+    }
+
+    #[test]
+    fn test_app_default_state() {
+        let app = make_app();
+        assert_eq!(app.state.mode, "agent");
+        assert!(app.state.sidebar_visible);
+        assert!(!app.state.streaming);
+    }
+
+    #[test]
+    fn test_app_push_user_message() {
+        let mut app = make_app();
+        app.push_user_message("Hello");
+        assert_eq!(app.state.message_count, 1);
+    }
+
+    #[test]
+    fn test_app_push_assistant_message() {
+        let mut app = make_app();
+        app.push_assistant_message("Hi there!");
+    }
+
+    #[test]
+    fn test_app_push_tool_call() {
+        let mut app = make_app();
+        app.push_tool_call("read", "src/main.rs");
+    }
+
+    #[test]
+    fn test_app_push_tool_result() {
+        let mut app = make_app();
+        app.push_tool_result("read", "fn main() {}", false);
+    }
+
+    #[test]
+    fn test_app_push_system_message() {
+        let mut app = make_app();
+        app.push_system_message("Session started");
+    }
+
+    #[test]
+    fn test_app_push_thinking() {
+        let mut app = make_app();
+        app.push_thinking("Let me think...");
+    }
+
+    #[test]
+    fn test_app_set_streaming() {
+        let mut app = make_app();
+        app.set_streaming(true);
+        assert!(app.state.streaming);
+        app.set_streaming(false);
+        assert!(!app.state.streaming);
+    }
+
+    #[test]
+    fn test_app_sync_from_state() {
+        let mut app = make_app();
+        app.state.mode = "planning".to_string();
+        app.state.model_name = "gpt-4".to_string();
+        app.state.session_name = "test-session".to_string();
+        app.state.message_count = 5;
+        app.sync_from_state();
+    }
+
+    #[test]
+    fn test_app_cycle_focus() {
+        let mut app = make_app();
+        assert_eq!(app.focus, Focus::InputBar);
+        app.cycle_focus(true);
+        assert_eq!(app.focus, Focus::Conversation);
+        app.cycle_focus(true);
+        assert_eq!(app.focus, Focus::Sidebar);
+        app.cycle_focus(true);
+        assert_eq!(app.focus, Focus::InputBar);
+        app.cycle_focus(false);
+        assert_eq!(app.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn test_app_set_focus() {
+        let mut app = make_app();
+        app.set_focus(Focus::Conversation);
+        assert_eq!(app.focus, Focus::Conversation);
+        assert!(!app.input_bar.focused());
+    }
+
+    #[test]
+    fn test_app_compute_layout() {
+        let app = make_app();
+        let (status, conv, sidebar, input, _main) = app.compute_layout();
+        assert_eq!(status.height, 1);
+        assert_eq!(input.height, 3);
+        assert!(conv.height > 0);
+        assert!(sidebar.width > 0);
+    }
+
+    #[test]
+    fn test_app_compute_layout_no_sidebar() {
+        let mut app = make_app();
+        app.state.sidebar_visible = false;
+        let (_status, conv, sidebar, _input, _main) = app.compute_layout();
+        assert!(conv.width > 0);
+        assert_eq!(sidebar.width, 0);
+    }
+
+    #[test]
+    fn test_app_handle_quit() {
+        let mut app = make_app();
+        let event = Event::Key(KeyEvent {
+            key: Key::Char('c'),
+            modifiers: Modifiers::ctrl(),
+        });
+        let action = app.handle_event(&event);
+        app.handle_action(action);
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn test_app_handle_ctrl_d() {
+        let mut app = make_app();
+        let event = Event::Key(KeyEvent {
+            key: Key::Char('d'),
+            modifiers: Modifiers::ctrl(),
+        });
+        let action = app.handle_event(&event);
+        app.handle_action(action);
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn test_app_handle_toggle_sidebar() {
+        let mut app = make_app();
+        let event = Event::Key(KeyEvent {
+            key: Key::Char('s'),
+            modifiers: Modifiers::ctrl(),
+        });
+        app.handle_event(&event);
+        assert!(!app.state.sidebar_visible);
+        app.handle_event(&event);
+        assert!(app.state.sidebar_visible);
+    }
+
+    #[test]
+    fn test_app_handle_tab_focus() {
+        let mut app = make_app();
+        let event = Event::Key(KeyEvent {
+            key: Key::Tab,
+            modifiers: Modifiers::new(),
+        });
+        app.handle_event(&event);
+        assert_eq!(app.focus, Focus::Conversation);
+    }
+
+    #[test]
+    fn test_app_render_frame() {
+        let mut app = make_app();
+        app.push_user_message("Hello");
+        app.push_assistant_message("Hi!");
+        app.render_frame();
+        // Should not panic
+    }
+
+    #[test]
+    fn test_tui_state_default() {
+        let state = TuiState::default();
+        assert_eq!(state.mode, "agent");
+        assert!(state.sidebar_visible);
+        assert!(!state.streaming);
+    }
+
+    #[test]
+    fn test_focus_default() {
+        assert_eq!(Focus::default(), Focus::InputBar);
+    }
+
+    #[test]
+    fn test_spawn_stdin_reader() {
+        // Just verify the channels are created
+        let (_tx, rx) = spawn_stdin_reader();
+        // Drop the sender to close the thread
+        drop(_tx);
+        // Receiver should eventually get a Disconnected error
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+    }
+}

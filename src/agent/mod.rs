@@ -3,6 +3,7 @@ pub mod input;
 pub mod safety;
 pub mod setup;
 pub mod tools;
+pub mod tui_loop;
 
 use std::{
     error::Error,
