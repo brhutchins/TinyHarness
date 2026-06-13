@@ -449,8 +449,7 @@ fn format_timestamp(unix_secs: u64) -> String {
     use std::time::{Duration, UNIX_EPOCH};
     let dt = std::time::SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(unix_secs))
-        .map(|t| t.duration_since(UNIX_EPOCH).ok())
-        .flatten()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs());
 
     if let Some(secs) = dt {
