@@ -120,6 +120,9 @@ fn input_rows<'a>(
     rows
 }
 
+/// Spinner animation frames (Braille patterns).
+const STREAMING_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /// The input bar at the bottom of the screen.
 ///
 /// Displays a prompt with mode and model labels, and accepts
@@ -128,6 +131,10 @@ fn input_rows<'a>(
 ///
 /// In confirmation mode, the input bar shows a `[y/n/a]?` prompt
 /// and only accepts y (approve), n (deny), or a (approve all) keys.
+///
+/// When the model is streaming/thinking, the input bar shows a spinner
+/// animation and label, blocking all input except Ctrl+C (interrupt)
+/// and Ctrl+D (quit).
 pub struct InputBarWidget {
     /// Current input text.
     content: String,
@@ -166,6 +173,12 @@ pub struct InputBarWidget {
     command_names: Vec<String>,
     /// Subcommand completions for commands that take arguments.
     subcommands: HashMap<String, Vec<String>>,
+    /// Whether the model is currently streaming/thinking.
+    streaming: bool,
+    /// The label to show while streaming (e.g., "Thinking", "Responding").
+    streaming_label: String,
+    /// Current spinner frame index (cycles through STREAMING_FRAMES).
+    streaming_frame: usize,
 }
 
 impl InputBarWidget {
@@ -208,6 +221,9 @@ impl InputBarWidget {
             kill_ring: String::new(),
             command_names,
             subcommands,
+            streaming: false,
+            streaming_label: String::from("Thinking"),
+            streaming_frame: 0,
         }
     }
 
@@ -254,7 +270,13 @@ impl InputBarWidget {
     }
 
     /// Total visual height of the input content for the given area width.
+    ///
+    /// When streaming, always returns 2 (border + spinner row) regardless of
+    /// content since input is blocked.
     pub fn content_height(&self, area_width: u16) -> u16 {
+        if self.streaming {
+            return 2; // border + spinner row
+        }
         let prompt = format!("[{}] ", self.mode_label);
         let prompt_width = prompt.width() as u16;
         let available = area_width.saturating_sub(prompt_width).max(1);
@@ -301,6 +323,35 @@ impl InputBarWidget {
     /// Check if the input bar is in question mode.
     pub fn is_questioning(&self) -> bool {
         self.questioning
+    }
+
+    /// Set the streaming state (model is thinking/responding).
+    ///
+    /// When streaming, the input bar shows a spinner animation and label,
+    /// and blocks all text input. Only Ctrl+C (interrupt) and Ctrl+D (quit)
+    /// are accepted.
+    pub fn set_streaming(&mut self, streaming: bool) {
+        self.streaming = streaming;
+        if streaming {
+            self.streaming_frame = 0;
+        }
+    }
+
+    /// Check if the input bar is in streaming mode.
+    pub fn is_streaming(&self) -> bool {
+        self.streaming
+    }
+
+    /// Set the streaming label (e.g., "Thinking", "Responding").
+    pub fn set_streaming_label(&mut self, label: &str) {
+        self.streaming_label = label.to_string();
+    }
+
+    /// Advance the spinner animation to the next frame.
+    pub fn tick_streaming(&mut self) {
+        if self.streaming {
+            self.streaming_frame = (self.streaming_frame + 1) % STREAMING_FRAMES.len();
+        }
     }
 
     /// Handle a mouse click on the input bar to position the cursor.
@@ -459,7 +510,37 @@ impl Widget for InputBarWidget {
         // Draw prompt and input on the next rows
         let input_row = row + 1;
 
-        if self.confirming {
+        if self.streaming {
+            // ── Streaming mode: show spinner + label, block input ──
+            let frame = STREAMING_FRAMES.get(self.streaming_frame).unwrap_or(&"⠋");
+            let label = format!("{} {}…", frame, self.streaming_label);
+            let mut col = area.x;
+            screen.write_str(
+                input_row,
+                col,
+                &label,
+                Color::ORANGE,
+                styles::INPUT_BAR_BG,
+                Style::dim(),
+            );
+            col += label.width() as u16;
+
+            // Fill the rest with background
+            for c in col..area.x + area.width {
+                if let Some(cell) = screen.get_mut(input_row, c) {
+                    cell.bg = styles::INPUT_BAR_BG;
+                }
+            }
+
+            // Fill any additional rows with background
+            for r in (input_row + 1)..area.y + area.height {
+                for c in area.x..area.x + area.width {
+                    if let Some(cell) = screen.get_mut(r, c) {
+                        cell.bg = styles::INPUT_BAR_BG;
+                    }
+                }
+            }
+        } else if self.confirming {
             // In confirmation mode, show a yellow prompt asking for y/n/a
             let confirm_prompt = "[y/n/a]? ";
             let mut col = area.x;
@@ -564,6 +645,28 @@ impl Widget for InputBarWidget {
     }
 
     fn handle_event(&mut self, event: &Event) -> Action {
+        // In streaming mode, block all input except Ctrl+C and Ctrl+D
+        if self.streaming {
+            if let Event::Key(key) = event {
+                match key {
+                    KeyEvent {
+                        key: Key::Char('c'),
+                        modifiers,
+                    } if modifiers.ctrl => {
+                        return Action::Interrupt;
+                    }
+                    KeyEvent {
+                        key: Key::Char('d'),
+                        modifiers,
+                    } if modifiers.ctrl => {
+                        return Action::Quit;
+                    }
+                    _ => return Action::None,
+                }
+            }
+            return Action::None;
+        }
+
         // Handle paste events (bracketed paste mode)
         if let Event::Paste(text) = event {
             if !self.confirming && !self.questioning {

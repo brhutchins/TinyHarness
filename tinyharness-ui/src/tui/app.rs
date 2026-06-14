@@ -19,7 +19,6 @@ use super::widget::{Action, Widget};
 use super::widgets::conversation::{ContextWarningLevel, ConversationLine, ConversationWidget};
 use super::widgets::input_bar::InputBarWidget;
 use super::widgets::sidebar::SidebarWidget;
-use super::widgets::spinner::SpinnerWidget;
 use super::widgets::status_bar::StatusBarWidget;
 use super::widgets::tool_output::{ToolOutputWidget, ToolResult, ToolStatus};
 
@@ -98,7 +97,6 @@ pub struct TuiApp<B: Backend> {
     sidebar: SidebarWidget,
     input_bar: InputBarWidget,
     tool_output: ToolOutputWidget,
-    spinner: SpinnerWidget,
 
     // State
     focus: Focus,
@@ -160,7 +158,6 @@ impl<B: Backend> TuiApp<B> {
             sidebar: SidebarWidget::new(),
             input_bar: InputBarWidget::new("agent", "unknown"),
             tool_output: ToolOutputWidget::new(),
-            spinner: SpinnerWidget::new("thinking"),
 
             focus: Focus::InputBar,
             state: TuiState::default(),
@@ -324,10 +321,11 @@ impl<B: Backend> TuiApp<B> {
         });
     }
 
-    /// Set the streaming state (shows/hides spinner).
+    /// Set the streaming state (shows spinner in input bar, blocks input).
     pub fn set_streaming(&mut self, streaming: bool) {
         self.state.streaming = streaming;
         self.status_bar.set_streaming(streaming);
+        self.input_bar.set_streaming(streaming);
     }
 
     // ── Layout ───────────────────────────────────────────────────────────
@@ -906,19 +904,6 @@ impl<B: Backend> TuiApp<B> {
         }
         self.input_bar.render(input_area, &mut self.screen);
 
-        // Render spinner if streaming
-        if self.state.streaming {
-            // Put spinner in the bottom-right of the conversation area.
-            // Clip to conv_area bounds so it doesn't overflow into the sidebar.
-            let spinner_width = 12u16; // frame(1) + space(1) + label up to ~10 chars
-            let spinner_x = conv_area.x + conv_area.width.saturating_sub(spinner_width);
-            let spinner_y = conv_area.y + conv_area.height.saturating_sub(1);
-            // Ensure we don't extend past the conversation area
-            let actual_width = spinner_width.min(conv_area.right().saturating_sub(spinner_x));
-            let spinner_area = Rect::new(spinner_x, spinner_y, actual_width, 1);
-            self.spinner.render(spinner_area, &mut self.screen);
-        }
-
         // Render help overlay if visible
         if self.help_visible {
             self.render_help_overlay(conv_area);
@@ -1213,57 +1198,16 @@ impl<B: Backend> TuiApp<B> {
     }
 
     /// Diff the current screen against the previous frame and write changes.
+    ///
+    /// Uses `Screen::diff_from` and `Screen::render_diff` which correctly
+    /// handle wide (CJK/fullwidth) characters and cursor position tracking.
     fn flush_diff(&mut self) -> io::Result<()> {
         let width = self.screen.width();
-        let height = self.screen.height();
+        let ops = self.screen.diff_from(&self.prev_screen);
+        let output = Screen::render_diff(&ops, width);
 
-        let mut last_pos: Option<(u16, u16)> = None;
-
-        for row in 0..height {
-            for col in 0..width {
-                let curr = self.screen.get(row, col);
-                let prev = self.prev_screen.get(row, col);
-
-                if curr != prev {
-                    // Move cursor if not adjacent
-                    if last_pos != Some((row, col.saturating_sub(1))) {
-                        write!(self.terminal, "\x1b[{};{}H", row + 1, col + 1)?;
-                    }
-
-                    // Write the cell
-                    let cell = curr.unwrap();
-                    // Apply foreground color
-                    write!(self.terminal, "{}", cell.fg.fg_escape())?;
-                    // Apply background color
-                    write!(self.terminal, "{}", cell.bg.bg_escape())?;
-                    // Apply style
-                    if cell.style.bold {
-                        write!(self.terminal, "\x1b[1m")?;
-                    }
-                    if cell.style.dim {
-                        write!(self.terminal, "\x1b[2m")?;
-                    }
-                    if cell.style.italic {
-                        write!(self.terminal, "\x1b[3m")?;
-                    }
-                    if cell.style.underline {
-                        write!(self.terminal, "\x1b[4m")?;
-                    }
-                    if cell.style.blink {
-                        write!(self.terminal, "\x1b[5m")?;
-                    }
-                    // Write character
-                    if cell.char != '\0' {
-                        write!(self.terminal, "{}", cell.char)?;
-                    } else {
-                        write!(self.terminal, " ")?;
-                    }
-                    // Reset style
-                    write!(self.terminal, "\x1b[0m")?;
-
-                    last_pos = Some((row, col));
-                }
-            }
+        if !output.is_empty() {
+            self.terminal.write_all(output.as_bytes())?;
         }
 
         // Swap buffers
@@ -1318,7 +1262,7 @@ impl<B: Backend> TuiApp<B> {
 
             // Update spinner animation
             if self.state.streaming {
-                self.spinner.tick();
+                self.input_bar.tick_streaming();
             }
 
             // Render and flush
@@ -1441,8 +1385,8 @@ impl<B: Backend> TuiApp<B> {
                 self.streaming_text.clear();
                 self.is_thinking = false;
                 self.thinking_text.clear();
-                self.spinner.set_label("Thinking");
-                self.spinner.start();
+                self.input_bar.set_streaming_label("Thinking");
+                self.input_bar.set_streaming(true);
                 self.set_streaming(true);
                 // Don't push a Thinking placeholder here — push it lazily
                 // when the first StreamingThinking event arrives. This avoids
@@ -1460,7 +1404,7 @@ impl<B: Backend> TuiApp<B> {
                         *t = self.thinking_text.clone();
                     }
                     self.thinking_text.clear();
-                    self.spinner.set_label("Responding");
+                    self.input_bar.set_streaming_label("Responding");
                 }
                 self.streaming_text.push_str(&text);
                 // Update the last assistant message or add a new one
@@ -1513,7 +1457,6 @@ impl<B: Backend> TuiApp<B> {
                     self.streaming_text.clear();
                 }
                 self.is_streaming = false;
-                self.spinner.stop();
                 self.set_streaming(false);
             }
             TuiAgentEvent::Error(msg) => {
@@ -1529,7 +1472,6 @@ impl<B: Backend> TuiApp<B> {
                 }
                 self.push_system_message(&format!("⚠ Error: {}", msg));
                 self.is_streaming = false;
-                self.spinner.stop();
                 self.set_streaming(false);
             }
             TuiAgentEvent::ToolCall { name, args_summary } => {
@@ -1612,7 +1554,6 @@ impl<B: Backend> TuiApp<B> {
                     self.thinking_text.clear();
                 }
                 self.is_streaming = false;
-                self.spinner.stop();
                 self.set_streaming(false);
             }
         }

@@ -286,9 +286,17 @@ impl ConversationWidget {
                 // For tool results, trim trailing blank lines and limit to
                 // 20 visible lines. Each content line is truncated (not wrapped)
                 // in the rendering, so each takes exactly 1 visual row.
+                // When there are more than 20 lines, a truncation indicator
+                // row ("  │ …") is shown, adding 1 extra visual row.
                 let trimmed = content.trim_end_matches('\n');
                 let line_count = trimmed.lines().count();
-                return line_count.clamp(1, 20);
+                let visible = line_count.clamp(1, 20);
+                // Account for the truncation indicator row when content exceeds 20 lines
+                return if line_count > 20 {
+                    visible + 1
+                } else {
+                    visible
+                };
             }
             ConversationLine::ToolCall { name, args_summary } => {
                 if args_summary.is_empty() {
@@ -884,9 +892,8 @@ impl ConversationWidget {
                         wrap_col,
                     );
                     current_row = last_row + 1;
-                    lines_remaining = lines_remaining.saturating_sub(
-                        (last_row - start_row + 1) as usize
-                    );
+                    lines_remaining =
+                        lines_remaining.saturating_sub((last_row - start_row + 1) as usize);
                 } else if skip_top > 0 {
                     // Skip question lines
                     let q_height = self.line_height_for_text(
@@ -2448,7 +2455,9 @@ mod tests {
 
         // Question with a long question that wraps in narrow area
         conv.push(ConversationLine::Question {
-            question: "What is the best approach for handling very long questions that need to wrap?".to_string(),
+            question:
+                "What is the best approach for handling very long questions that need to wrap?"
+                    .to_string(),
             answers: vec!["Short answer".to_string()],
         });
 

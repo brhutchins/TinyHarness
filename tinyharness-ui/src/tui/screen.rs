@@ -587,6 +587,10 @@ impl Screen {
     ///
     /// Handles wide (CJK/fullwidth) characters correctly by skipping
     /// continuation cells and tracking display width for cursor position.
+    ///
+    /// Each cell's style is applied after a reset to prevent attribute
+    /// leakage — without this, styles like `dim` or colored backgrounds
+    /// would "stick" and bleed into subsequent cells.
     pub fn render_diff(ops: &[DiffOp], width: u16) -> String {
         use unicode_width::UnicodeWidthChar;
 
@@ -594,7 +598,7 @@ impl Screen {
             return String::new();
         }
 
-        let mut output = String::with_capacity(ops.len() * 20);
+        let mut output = String::with_capacity(ops.len() * 24);
         let mut last_row: Option<u16> = None;
         let mut last_col: Option<u16> = None;
 
@@ -613,6 +617,12 @@ impl Screen {
                     if need_move {
                         output.push_str(&format!("\x1b[{};{}H", row + 1, col + 1));
                     }
+
+                    // Reset terminal attributes before applying this cell's
+                    // style to prevent attribute leakage from previous cells.
+                    // Without this, styles like dim (ESC[2m) or colored
+                    // backgrounds persist and bleed into subsequent cells.
+                    output.push_str("\x1b[0m");
 
                     // Apply style
                     output.push_str(&cell.style.escape());
