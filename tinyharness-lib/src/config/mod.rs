@@ -3,6 +3,7 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
+use crate::SecretString;
 use crate::mode::AgentMode;
 
 // ── Project Settings ────────────────────────────────────────────────────────
@@ -325,7 +326,7 @@ pub struct Settings {
     pub last_provider_url: Option<String>,
     pub last_model: Option<String>,
     pub preferred_mode: AgentMode,
-    pub ollama_api_key: Option<String>,
+    pub ollama_api_key: Option<SecretString>,
     /// Timeout in seconds for Ollama requests (default: 5)
     pub ollama_timeout_secs: u64,
     /// Maximum number of retries for Ollama requests (default: 3)

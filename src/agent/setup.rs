@@ -12,6 +12,7 @@
 
 use std::io::{IsTerminal, Write};
 
+use tinyharness_lib::SecretString;
 use tinyharness_lib::config::{ProviderKind, Settings, load_settings, save_settings};
 use tinyharness_ui::output::Output;
 use tinyharness_ui::style::*;
@@ -38,11 +39,10 @@ pub enum ApiKeyChoice {
 
 /// Display a stored API key in masked form (first 4 + last 4 chars).
 /// Returns "****" for short keys and "(not set)" for `None`.
-pub fn mask_api_key(key: Option<&String>) -> String {
+pub fn mask_api_key(key: Option<&SecretString>) -> String {
     match key {
         None => "(not set)".to_string(),
-        Some(k) if k.len() > 8 => format!("{}...{}", &k[..4], &k[k.len() - 4..]),
-        Some(_) => "****".to_string(),
+        Some(k) => k.masked(),
     }
 }
 
@@ -236,7 +236,7 @@ pub fn apply_api_key_choice(choice: ApiKeyChoice) -> bool {
             true
         }
         ApiKeyChoice::Set(key) => {
-            s.ollama_api_key = Some(key);
+            s.ollama_api_key = Some(SecretString::new(key));
             save_settings(&s);
             true
         }
@@ -375,7 +375,7 @@ mod tests {
     fn mask_api_key_handles_long_keys() {
         // 12-char key → first 4 + "..." + last 4
         assert_eq!(
-            mask_api_key(Some(&"abcdef123456".to_string())),
+            mask_api_key(Some(&SecretString::new("abcdef123456".to_string()))),
             "abcd...3456"
         );
     }
@@ -383,14 +383,23 @@ mod tests {
     #[test]
     fn mask_api_key_handles_short_keys() {
         // 8 chars or fewer → fully masked
-        assert_eq!(mask_api_key(Some(&"abc".to_string())), "****");
-        assert_eq!(mask_api_key(Some(&"abcdefgh".to_string())), "****");
+        assert_eq!(
+            mask_api_key(Some(&SecretString::new("abc".to_string()))),
+            "****"
+        );
+        assert_eq!(
+            mask_api_key(Some(&SecretString::new("abcdefgh".to_string()))),
+            "****"
+        );
     }
 
     #[test]
     fn mask_api_key_handles_exactly_9_chars() {
         // 9 chars is the threshold: still show first/last 4
-        assert_eq!(mask_api_key(Some(&"abcdefghi".to_string())), "abcd...fghi");
+        assert_eq!(
+            mask_api_key(Some(&SecretString::new("abcdefghi".to_string()))),
+            "abcd...fghi"
+        );
     }
 
     #[test]
