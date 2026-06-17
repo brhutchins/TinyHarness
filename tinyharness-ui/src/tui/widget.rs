@@ -156,7 +156,9 @@ pub fn truncate_str(s: &str, max_len: usize) -> &str {
 /// Truncate a string so that its Unicode display width is at most `max_width`.
 ///
 /// Unlike `truncate_str`, this respects terminal display columns, so CJK and
-/// emoji characters count correctly. Returns the longest prefix whose width
+/// emoji characters count correctly. Zero-width characters (combining marks)
+/// do not count toward the width and are included as long as they follow a
+/// character within the limit. Returns the longest prefix whose width
 /// does not exceed `max_width`.
 pub fn truncate_str_width(s: &str, max_width: usize) -> &str {
     if s.width() <= max_width {
@@ -164,7 +166,11 @@ pub fn truncate_str_width(s: &str, max_width: usize) -> &str {
     }
     let mut acc = 0usize;
     for (idx, ch) in s.char_indices() {
-        let w = ch.width().unwrap_or(1).max(1);
+        let w = ch.width().unwrap_or(0);
+        if w == 0 {
+            // Combining marks don't add width; keep them with the previous char.
+            continue;
+        }
         if acc + w > max_width {
             return &s[..idx];
         }
@@ -201,5 +207,31 @@ mod tests {
         for i in 0..=s.len() + 5 {
             let _ = truncate_str(s, i);
         }
+    }
+
+    #[test]
+    fn test_truncate_str_width_ascii() {
+        assert_eq!(truncate_str_width("hello", 3), "hel");
+        assert_eq!(truncate_str_width("hello", 10), "hello");
+        assert_eq!(truncate_str_width("hello", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_str_width_cjk() {
+        // CJK characters have display width 2
+        assert_eq!(truncate_str_width("你好", 1), "");
+        assert_eq!(truncate_str_width("你好", 2), "你");
+        assert_eq!(truncate_str_width("你好", 3), "你"); // "好" would make width 4 > 3
+        assert_eq!(truncate_str_width("你好", 4), "你好");
+    }
+
+    #[test]
+    fn test_truncate_str_width_combining_mark() {
+        // Combining marks have zero display width and should not be
+        // counted toward the truncation width.
+        // 'e' + combining acute (U+0301) = display width 1
+        let s = "e\u{0301}x";
+        assert_eq!(truncate_str_width(s, 1), "e\u{0301}"); // combining mark kept with 'e'
+        assert_eq!(truncate_str_width(s, 2), "e\u{0301}x"); // all fits in width 2
     }
 }

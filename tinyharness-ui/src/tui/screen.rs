@@ -107,7 +107,10 @@ impl Screen {
     /// Merge a zero-width combining mark into the previous cell.
     ///
     /// Does nothing if `col` is at the start of the current rendering run
-    /// or if `in_view` is false.
+    /// or if `in_view` is false. If the preceding cell is a wide-character
+    /// continuation cell, the mark is merged into the wide character's
+    /// primary cell (two columns back) instead, since continuation cells
+    /// are skipped during rendering.
     fn merge_combining_mark(
         &mut self,
         row: u16,
@@ -122,7 +125,21 @@ impl Screen {
         if !in_view || col <= start_col {
             return;
         }
-        if let Some(prev) = self.get_mut(row, col - 1) {
+        // If the immediately preceding cell is a wide continuation cell,
+        // the actual character is one column further back.
+        let target_col = if let Some(prev) = self.get(row, col - 1) {
+            if prev.wide && col >= 2 {
+                col - 2
+            } else {
+                col - 1
+            }
+        } else {
+            col - 1
+        };
+        if target_col < start_col {
+            return;
+        }
+        if let Some(prev) = self.get_mut(row, target_col) {
             prev.char = ch;
             prev.fg = fg;
             prev.bg = bg;
@@ -155,6 +172,12 @@ impl Screen {
             if width == 0 {
                 self.merge_combining_mark(row, c, col, ch, fg, bg, style, c < self.width);
                 continue;
+            }
+            // Don't write a wide character if it doesn't fully fit — the
+            // terminal would render it as 2 columns but only 1 cell would
+            // be tracked, causing cursor misalignment in render_diff.
+            if width > 1 && c + 1 >= self.width {
+                break;
             }
             self.set_cell(
                 row,
@@ -360,6 +383,12 @@ impl Screen {
             // Only write the cell if we're past the skip zone and within bounds
             let past_skip = cfg.skip_rows == 0 || visual_row >= cfg.skip_rows;
             if past_skip && screen_row <= cfg.max_row {
+                // Don't write a wide character if it doesn't fully fit on the
+                // screen — the terminal renders it as 2 columns but only 1
+                // cell would be tracked, causing cursor misalignment.
+                if width > 1 && col + 1 >= self.width {
+                    break;
+                }
                 self.set_cell(
                     screen_row,
                     col,
@@ -1318,5 +1347,73 @@ mod tests {
             "Expected at least 1 reset for style change, got {}",
             reset_count
         );
+    }
+
+    #[test]
+    fn test_screen_wide_char_does_not_overflow_last_column() {
+        // A wide character at the last column should not be written as a
+        // half-width glyph — it should be skipped entirely.
+        let mut s = Screen::new(3, 1);
+        // '一' has width 2. At col 2 (last column of a 3-wide screen),
+        // it needs cols 2-3 but only col 2 exists.
+        s.write_str(0, 2, "一", Color::Default, Color::Default, Style::new());
+        // The cell at col 2 should remain default (space) — the wide char
+        // was skipped because it didn't fully fit.
+        assert_eq!(s.get(0, 2).unwrap().char, ' ');
+        assert!(!s.get(0, 2).unwrap().wide);
+    }
+
+    #[test]
+    fn test_screen_combining_mark_after_wide_char() {
+        // A combining mark after a wide character should merge into the
+        // wide character's primary cell, not the continuation cell.
+        let mut s = Screen::new(10, 1);
+        // '一' (width 2) + combining acute (U+0301, width 0)
+        s.write_str(0, 0, "一\u{0301}", Color::Default, Color::Default, Style::new());
+
+        // The combining mark should be in col 0 (the wide char's primary cell),
+        // not col 1 (the continuation cell).
+        let cell_0 = s.get(0, 0).unwrap();
+        assert_eq!(cell_0.char, '\u{0301}', "combining mark should be in primary cell");
+        assert!(!cell_0.wide);
+
+        // Col 1 should still be the continuation cell
+        let cell_1 = s.get(0, 1).unwrap();
+        assert!(cell_1.wide, "col 1 should still be a wide continuation cell");
+    }
+
+    #[test]
+    fn test_screen_write_str_wide_char_at_last_col_breaks() {
+        // "ab一" on a 3-wide screen: 'a' at 0, 'b' at 1, '一' at 2 needs 2-3.
+        // Since col 3 doesn't exist, '一' should be skipped.
+        let mut s = Screen::new(3, 1);
+        s.write_str(0, 0, "ab一", Color::Default, Color::Default, Style::new());
+        assert_eq!(s.get(0, 0).unwrap().char, 'a');
+        assert_eq!(s.get(0, 1).unwrap().char, 'b');
+        assert_eq!(s.get(0, 2).unwrap().char, ' '); // '一' was skipped
+    }
+
+    #[test]
+    fn test_screen_write_wrapped_wide_char_at_last_col() {
+        // In wrapped mode, a wide char at the last column should wrap to the
+        // next line rather than being written as a half-width glyph.
+        let mut s = Screen::new(3, 3);
+        s.write_str_wrapped(
+            0,
+            0,
+            "ab一c",
+            Color::Default,
+            Color::Default,
+            Style::new(),
+            true,
+        );
+        // Row 0: "ab" (cols 0-1), '一' doesn't fit at col 2, wraps to row 1
+        assert_eq!(s.get(0, 0).unwrap().char, 'a');
+        assert_eq!(s.get(0, 1).unwrap().char, 'b');
+        assert_eq!(s.get(0, 2).unwrap().char, ' '); // empty (wide char wrapped)
+        // Row 1: "一" (cols 0-1), then 'c' at col 2
+        assert_eq!(s.get(1, 0).unwrap().char, '一');
+        assert!(s.get(1, 1).unwrap().wide);
+        assert_eq!(s.get(1, 2).unwrap().char, 'c');
     }
 }

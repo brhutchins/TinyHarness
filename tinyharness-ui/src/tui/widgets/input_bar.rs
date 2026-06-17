@@ -586,11 +586,18 @@ impl Widget for InputBarWidget {
 
             // Draw input content
             let available_width = area.width.saturating_sub(col - area.x);
-            let display_text = if self.content.width() > available_width as usize {
-                let start = self.content.len().saturating_sub(available_width as usize);
-                &self.content[start..]
+            let (display_text, display_offset) = if self.content.width() > available_width as usize {
+                // Content is wider than available — show the tail, snapping to a
+                // char boundary so multi-byte UTF-8 doesn't panic.
+                let target_bytes = self.content.len().saturating_sub(available_width as usize);
+                let start = self.content
+                    .char_indices()
+                    .find(|(i, _)| *i >= target_bytes)
+                    .map(|(i, _)| i)
+                    .unwrap_or(target_bytes);
+                (&self.content[start..], start)
             } else {
-                &self.content
+                (self.content.as_str(), 0)
             };
 
             screen.write_str(
@@ -604,7 +611,8 @@ impl Widget for InputBarWidget {
 
             // Draw cursor
             if self.focused {
-                let before_cursor = &display_text[..self.cursor.min(display_text.len())];
+                let adjusted_cursor = self.cursor.saturating_sub(display_offset).min(display_text.len());
+                let before_cursor = &display_text[..adjusted_cursor];
                 let cursor_col = col + before_cursor.width() as u16;
                 if cursor_col < area.x + area.width {
                     if let Some(cell) = screen.get_mut(input_row, cursor_col) {
@@ -1842,5 +1850,39 @@ mod tests {
         let event = Event::Paste("test".to_string());
         bar.handle_event(&event);
         // Paste is ignored in question mode per our implementation
+    }
+
+    #[test]
+    fn test_question_mode_render_multibyte_no_panic() {
+        // Regression test: non-ASCII content in questioning mode should not
+        // panic when the display is truncated to fit the available width.
+        // The old code used content.len().saturating_sub(available_width) as a
+        // byte offset, which could land mid-character and panic.
+        let mut screen = Screen::new(30, 5);
+        let mut bar = InputBarWidget::new("agent", "test");
+        bar.set_questioning(true, 3);
+        // Fill with CJK characters (3 bytes each, display width 2)
+        bar.content = "你好世界测试".to_string(); // 6 chars, 18 bytes, width 12
+        bar.cursor = bar.content.len();
+
+        let area = Rect::new(0, 0, 30, 5);
+        bar.render(area, &mut screen);
+        // Should not panic — that's the test
+    }
+
+    #[test]
+    fn test_question_mode_render_cursor_position_with_truncation() {
+        // When content is truncated in question mode, the cursor should be
+        // positioned correctly relative to the displayed (truncated) text.
+        let mut screen = Screen::new(20, 5);
+        let mut bar = InputBarWidget::new("agent", "test");
+        bar.set_questioning(true, 3);
+        // Content wider than available width so it gets truncated
+        bar.content = "abcdefghij".to_string(); // 10 chars, width 10
+        bar.cursor = 8; // cursor at 'i'
+
+        let area = Rect::new(0, 0, 20, 5);
+        bar.render(area, &mut screen);
+        // Should not panic and cursor should be visible
     }
 }

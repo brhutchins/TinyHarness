@@ -330,8 +330,45 @@ impl ConversationWidget {
                 return question_rows + answer_rows;
             }
             ConversationLine::Separator => return 1,
-            ConversationLine::ConfirmPrompt { diff_preview, .. } => {
-                let mut rows = 1usize;
+            ConversationLine::ConfirmPrompt {
+                name,
+                args_summary,
+                diff_preview,
+            } => {
+                let prompt_prefix = "  ⚠ Confirm ";
+                let prompt_prefix_width = prompt_prefix.width();
+                let prompt_text = format!("{} {}", name, args_summary);
+                let mut rows = self.line_height_for_text(
+                    &prompt_text,
+                    area_width,
+                    prompt_prefix_width,
+                    prompt_prefix_width,
+                );
+                // Check if the suffix fits on the last line; if not, add a row
+                let suffix = " [y/n/a]?";
+                let suffix_width = suffix.width();
+                let last_line_used = if prompt_text.is_empty() {
+                    prompt_prefix_width
+                } else {
+                    // Calculate columns used on the last wrapped line
+                    let wrap_col = area_width as usize;
+                    let mut col = prompt_prefix_width;
+                    for ch in prompt_text.chars() {
+                        let w = ch.width().unwrap_or(1);
+                        if w == 0 {
+                            continue;
+                        }
+                        if col + w > wrap_col {
+                            col = prompt_prefix_width + w;
+                        } else {
+                            col += w;
+                        }
+                    }
+                    col
+                };
+                if last_line_used + suffix_width > area_width as usize {
+                    rows += 1;
+                }
                 if let Some(diff) = diff_preview
                     && !diff.is_empty()
                 {
@@ -769,31 +806,95 @@ impl ConversationWidget {
                 let mut current_row = start_row;
                 let mut lines_remaining = rows_available;
 
-                // Render the prompt line
+                // Render the prompt line(s)
                 if skip_top == 0 && current_row <= effective_max_row && lines_remaining > 0 {
-                    let prompt = format!("  ⚠ Confirm {} {}", name, args_summary);
+                    let prompt_prefix = "  ⚠ Confirm ";
+                    let prompt_prefix_width = prompt_prefix.width() as u16;
+                    let prompt_text = format!("{} {}", name, args_summary);
                     let suffix = " [y/n/a]?";
-                    let prompt_width = prompt.width();
+
+                    // Write the prefix
                     screen.write_str(
                         current_row,
                         area.x,
-                        &prompt,
+                        prompt_prefix,
                         Color::YELLOW,
                         Color::Default,
                         Style::bold(),
                     );
-                    let prompt_end =
-                        area.x + prompt_width.min(area.width as usize - suffix.width()) as u16;
-                    screen.write_str(
+
+                    // Write the prompt text with wrapping/clipping
+                    let last_row = screen.write_str_wrapped_clipped(
                         current_row,
-                        prompt_end,
-                        suffix,
+                        area.x + prompt_prefix_width,
+                        &prompt_text,
                         Color::YELLOW,
                         Color::Default,
-                        Style::default(),
+                        Style::bold(),
+                        area.x + prompt_prefix_width,
+                        effective_max_row,
+                        wrap_col,
                     );
-                    current_row += 1;
-                    lines_remaining = lines_remaining.saturating_sub(1);
+
+                    // Calculate where to put the suffix: on the last row of the wrapped text
+                    // If it fits on the last line, append it; otherwise put it on a new line
+                    let text_width_on_last_line = if prompt_text.is_empty() {
+                        0usize
+                    } else {
+                        // Calculate the column where the wrapped text ends on the last row
+                        let mut col = prompt_prefix_width as usize;
+                        let wrap_col_usize = wrap_col as usize;
+                        for ch in prompt_text.chars() {
+                            let w = ch.width().unwrap_or(1);
+                            if w == 0 {
+                                continue;
+                            }
+                            if col + w > wrap_col_usize {
+                                col = prompt_prefix_width as usize + w;
+                            } else {
+                                col += w;
+                            }
+                        }
+                        col - prompt_prefix_width as usize
+                    };
+
+                    let suffix_width = suffix.width();
+                    let prompt_end_col =
+                        area.x + prompt_prefix_width + text_width_on_last_line as u16;
+
+                    if prompt_end_col + suffix_width as u16 <= wrap_col
+                        && last_row <= effective_max_row
+                    {
+                        // Suffix fits on the last line
+                        screen.write_str(
+                            last_row,
+                            prompt_end_col,
+                            suffix,
+                            Color::YELLOW,
+                            Color::Default,
+                            Style::default(),
+                        );
+                        current_row = last_row + 1;
+                        let prompt_rows = (last_row - start_row + 1) as usize;
+                        lines_remaining = lines_remaining.saturating_sub(prompt_rows);
+                    } else if last_row < effective_max_row && lines_remaining > 1 {
+                        // Suffix doesn't fit — put it on a new line
+                        screen.write_str(
+                            last_row + 1,
+                            area.x,
+                            suffix,
+                            Color::YELLOW,
+                            Color::Default,
+                            Style::default(),
+                        );
+                        current_row = last_row + 2;
+                        let prompt_rows = (last_row - start_row + 2) as usize;
+                        lines_remaining = lines_remaining.saturating_sub(prompt_rows);
+                    } else {
+                        current_row = last_row + 1;
+                        let prompt_rows = (last_row - start_row + 1) as usize;
+                        lines_remaining = lines_remaining.saturating_sub(prompt_rows);
+                    }
                 }
 
                 // Render diff preview lines
@@ -847,7 +948,7 @@ impl ConversationWidget {
                         if line_bg != Color::Default {
                             let fill_end = area.x + area.width.saturating_sub(1);
                             let end_col =
-                                area.x + display.width_cjk().min(area.width as usize - 1) as u16;
+                                area.x + display.width().min(area.width as usize - 1) as u16;
                             if end_col < fill_end {
                                 for c in end_col..fill_end {
                                     if let Some(cell) = screen.get_mut(current_row, c) {
@@ -869,9 +970,10 @@ impl ConversationWidget {
                 let answer_prefix_len = if answers.len() >= 10 { 7 } else { 6 };
                 let mut current_row = start_row;
                 let mut lines_remaining = rows_available;
+                let mut skip_remaining = skip_top;
 
                 // Render question line
-                if skip_top == 0 && current_row <= max_row && lines_remaining > 0 {
+                if skip_remaining == 0 && current_row <= max_row && lines_remaining > 0 {
                     screen.write_str(
                         current_row,
                         area.x,
@@ -894,7 +996,7 @@ impl ConversationWidget {
                     current_row = last_row + 1;
                     lines_remaining =
                         lines_remaining.saturating_sub((last_row - start_row + 1) as usize);
-                } else if skip_top > 0 {
+                } else if skip_remaining > 0 {
                     // Skip question lines
                     let q_height = self.line_height_for_text(
                         question,
@@ -902,8 +1004,37 @@ impl ConversationWidget {
                         question_prefix_width,
                         question_prefix_width,
                     );
-                    if skip_top >= q_height {
-                        // Question entirely skipped; adjust for remaining skip
+                    if skip_remaining >= q_height {
+                        // Question entirely skipped
+                        skip_remaining -= q_height;
+                    } else {
+                        // Partially visible — render with skip
+                        if current_row <= effective_max_row && lines_remaining > 0 {
+                            screen.write_str(
+                                current_row,
+                                area.x,
+                                question_prefix,
+                                Color::YELLOW,
+                                Color::Default,
+                                Style::bold(),
+                            );
+                            screen.write_str_wrapped_skip_clipped(
+                                current_row,
+                                area.x + question_prefix_width as u16,
+                                question,
+                                Color::YELLOW,
+                                Color::Default,
+                                Style::default(),
+                                area.x + question_prefix_width as u16,
+                                effective_max_row,
+                                wrap_col,
+                                skip_remaining,
+                            );
+                            let q_rows = q_height - skip_remaining;
+                            current_row += q_rows as u16;
+                            lines_remaining = lines_remaining.saturating_sub(q_rows);
+                        }
+                        skip_remaining = 0;
                     }
                 }
 
@@ -918,10 +1049,10 @@ impl ConversationWidget {
                         answer_prefix_len,
                     );
 
-                    if skip_top > 0 {
-                        // Still skipping
-                        if a_height <= skip_top {
+                    if skip_remaining > 0 {
+                        if a_height <= skip_remaining {
                             // This answer is entirely skipped
+                            skip_remaining -= a_height;
                         } else {
                             // Partially visible — render with skip
                             if current_row <= effective_max_row && lines_remaining > 0 {
@@ -943,9 +1074,13 @@ impl ConversationWidget {
                                     area.x + answer_label_width as u16,
                                     effective_max_row,
                                     wrap_col,
-                                    skip_top,
+                                    skip_remaining,
                                 );
+                                let a_rows = a_height - skip_remaining;
+                                current_row += a_rows as u16;
+                                lines_remaining = lines_remaining.saturating_sub(a_rows);
                             }
+                            skip_remaining = 0;
                         }
                     } else if current_row <= effective_max_row && lines_remaining > 0 {
                         // Normal rendering (no skipping)
@@ -2470,6 +2605,342 @@ mod tests {
             overflows.is_empty(),
             "Question with wrapping overflows: {:?}",
             overflows
+        );
+    }
+
+    #[test]
+    fn test_confirm_prompt_long_text_does_not_overflow() {
+        // The main bug: long confirmation text (like a `run` command) should not
+        // overflow past the conversation area into adjacent widgets (input bar,
+        // sidebar, etc.). The prompt text must wrap within the area boundaries.
+        let mut screen = Screen::new(40, 10);
+
+        // Mark rows 5-9 with identifiable content to detect overflow
+        for row in 5u16..10 {
+            for col in 0..40 {
+                if let Some(cell) = screen.get_mut(row, col) {
+                    cell.char = 'X';
+                    cell.fg = Color::RED;
+                }
+            }
+        }
+
+        let mut conv = ConversationWidget::new();
+
+        // Long confirmation prompt that would overflow if not wrapped/clipped
+        conv.push(ConversationLine::ConfirmPrompt {
+            name: "run".to_string(),
+            args_summary:
+                "cargo test --all-features --workspace -- --test-threads=1 2>&1 | head -100"
+                    .to_string(),
+            diff_preview: None,
+        });
+
+        // Render into a 5-row area (rows 0-4)
+        let area = Rect::new(0, 0, 40, 5);
+        conv.render(area, &mut screen);
+
+        // Check that rows 5-9 still have 'X' (not overwritten by overflow)
+        for row in 5u16..10 {
+            for col in 0..40 {
+                let cell = screen.get(row, col).unwrap();
+                assert_eq!(
+                    cell.char, 'X',
+                    "Row {} col {} was overwritten (char='{}') — ConfirmPrompt overflowed",
+                    row, col, cell.char
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_confirm_prompt_long_text_with_offset_area() {
+        // Test that ConfirmPrompt doesn't overflow when rendered in an area
+        // that doesn't start at row 0 (simulating the real TUI layout where
+        // the conversation area starts below a status bar).
+        let mut screen = Screen::new(80, 24);
+
+        // Mark the input bar area (rows 20-23) with identifiable content
+        for row in 20u16..24 {
+            for col in 0..80 {
+                if let Some(cell) = screen.get_mut(row, col) {
+                    cell.char = 'I';
+                }
+            }
+        }
+
+        let mut conv = ConversationWidget::new();
+
+        // Add a user message, then a long ConfirmPrompt
+        conv.push(ConversationLine::User {
+            text: "Please run the tests".to_string(),
+        });
+        conv.push(ConversationLine::ConfirmPrompt {
+            name: "run".to_string(),
+            args_summary: "cargo test --all-features --workspace -- --test-threads=1 2>&1 | head -100 && echo 'done'".to_string(),
+            diff_preview: None,
+        });
+
+        // Render conversation in the area rows 1-19 (height 19)
+        let area = Rect::new(0, 1, 80, 19);
+        conv.render(area, &mut screen);
+
+        // Check that the input bar area (rows 20-23) is not overwritten
+        for row in 20u16..24 {
+            for col in 0..80 {
+                let cell = screen.get(row, col).unwrap();
+                assert_eq!(
+                    cell.char, 'I',
+                    "Input bar cell at row={}, col={} was overwritten (char='{}')",
+                    row, col, cell.char
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_confirm_prompt_suffix_on_new_line_when_wrapped() {
+        // When the prompt text is long enough to wrap, the [y/n/a]? suffix
+        // should appear on a new line if it doesn't fit after the wrapped text.
+        // For short text, the suffix should appear on the same line.
+        let mut screen = Screen::new(30, 10);
+        let mut conv = ConversationWidget::new();
+
+        // Short args that should fit on one line with the suffix
+        conv.push(ConversationLine::ConfirmPrompt {
+            name: "edit".to_string(),
+            args_summary: "file.rs".to_string(),
+            diff_preview: None,
+        });
+
+        let area = Rect::new(0, 0, 30, 10);
+        conv.render(area, &mut screen);
+
+        // The suffix "[y/n/a]?" should appear somewhere in the first few rows
+        let mut found_suffix = false;
+        for row in 0..3u16 {
+            let mut row_text = String::new();
+            for col in 0..30u16 {
+                row_text.push(screen.get(row, col).unwrap().char);
+            }
+            if row_text.contains("[y/n/a]") {
+                found_suffix = true;
+                break;
+            }
+        }
+        assert!(
+            found_suffix,
+            "ConfirmPrompt suffix [y/n/a]? should appear in rendered output for short text"
+        );
+    }
+}
+
+#[cfg(test)]
+mod visual_tests {
+    use super::*;
+
+    /// Print a visual representation of what the screen looks like for a ConfirmPrompt
+    /// with very long text (simulating a `run` command with lorem ipsum).
+    #[test]
+    fn test_confirm_prompt_lorem_ipsum_visual() {
+        let lorem = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.";
+
+        // Test with various narrow widths to simulate small terminals
+        for width in [40, 60, 80, 120] {
+            let mut screen = Screen::new(width, 20);
+
+            // Mark rows below the conversation area
+            let conv_height = 15u16;
+            for row in conv_height..20 {
+                for col in 0..width {
+                    if let Some(cell) = screen.get_mut(row, col) {
+                        cell.char = 'I'; // Mark input bar area
+                        cell.fg = Color::GREEN;
+                    }
+                }
+            }
+
+            // Mark columns beyond conversation width (simulating sidebar)
+            let conv_width = width;
+            for row in 0..conv_height {
+                // (no sidebar in this test, but we could add one)
+            }
+
+            let mut conv = ConversationWidget::new();
+            conv.push(ConversationLine::ConfirmPrompt {
+                name: "run".to_string(),
+                args_summary: format!("echo \"{}\"", lorem),
+                diff_preview: None,
+            });
+            // Add a message after to verify layout isn't broken
+            conv.push(ConversationLine::User {
+                text: "after confirm".to_string(),
+            });
+
+            let area = Rect::new(0, 0, conv_width, conv_height);
+            conv.render(area, &mut screen);
+
+            // Check no overflow into input bar area
+            let mut overflow_count = 0;
+            for row in conv_height..20 {
+                for col in 0..width {
+                    let cell = screen.get(row, col).unwrap();
+                    if cell.char != 'I' {
+                        overflow_count += 1;
+                    }
+                }
+            }
+            assert_eq!(
+                overflow_count, 0,
+                "ConfirmPrompt with lorem ipsum overflows into input area at width {} ({} cells overwritten)",
+                width, overflow_count
+            );
+
+            // Print the rendered output for visual inspection
+            eprintln!("\n=== ConfirmPrompt at width {} ===", width);
+            for row in 0..conv_height {
+                let mut line = String::new();
+                for col in 0..conv_width {
+                    let ch = screen.get(row, col).unwrap().char;
+                    line.push(if ch == '\0' || ch == ' ' { '.' } else { ch });
+                }
+                eprintln!("{}", line);
+            }
+            eprintln!("=== end ===\n");
+        }
+    }
+
+    /// Test that a very long ConfirmPrompt with diff preview also doesn't overflow.
+    #[test]
+    fn test_confirm_prompt_long_text_with_diff_no_overflow() {
+        let long_cmd = "echo \"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.\"";
+
+        for width in [40, 60, 80] {
+            let mut screen = Screen::new(width, 30);
+
+            // Mark rows below conversation
+            let conv_height = 20u16;
+            for row in conv_height..30 {
+                for col in 0..width {
+                    if let Some(cell) = screen.get_mut(row, col) {
+                        cell.char = 'B'; // Below
+                    }
+                }
+            }
+
+            let mut conv = ConversationWidget::new();
+            conv.push(ConversationLine::ConfirmPrompt {
+                name: "run".to_string(),
+                args_summary: long_cmd.to_string(),
+                diff_preview: Some(
+                    "@@ -1,5 +1,5 @@\n-old line that is also quite long and should be truncated properly\n+new line that replaces it\n context line".to_string(),
+                ),
+            });
+
+            let area = Rect::new(0, 0, width, conv_height);
+            conv.render(area, &mut screen);
+
+            // Check no overflow
+            let mut overflow_count = 0;
+            for row in conv_height..30 {
+                for col in 0..width {
+                    let cell = screen.get(row, col).unwrap();
+                    if cell.char != 'B' {
+                        overflow_count += 1;
+                    }
+                }
+            }
+            assert_eq!(
+                overflow_count, 0,
+                "ConfirmPrompt with diff overflows at width {} ({} cells)",
+                width, overflow_count
+            );
+        }
+    }
+
+    // ── Question scroll/skip tests ──────────────────────────────────────
+
+    #[test]
+    fn test_question_scroll_skip_does_not_panic() {
+        // Regression test: scrolling past a Question line should not panic
+        // or leave content at wrong positions. The old code had an immutable
+        // skip_top that was never decremented, causing misrendering.
+        let mut screen = Screen::new(40, 10);
+        let mut conv = ConversationWidget::new();
+
+        // Add enough lines before the question to scroll past them
+        for i in 0..10 {
+            conv.push(ConversationLine::User {
+                text: format!("Message {}", i),
+            });
+        }
+        conv.push(ConversationLine::Question {
+            question: "Which option?".to_string(),
+            answers: vec![
+                "First answer that is long enough to wrap".to_string(),
+                "Second answer".to_string(),
+                "Third answer".to_string(),
+            ],
+        });
+        conv.push(ConversationLine::User {
+            text: "after question".to_string(),
+        });
+
+        // Scroll so the question is partially visible
+        conv.scroll_offset = 8;
+        conv.auto_scroll = false;
+
+        let area = Rect::new(0, 0, 40, 5);
+        conv.render(area, &mut screen);
+
+        // Should not panic — that's the core assertion
+    }
+
+    #[test]
+    fn test_question_scroll_past_question_shows_answers() {
+        // When scrolled past the question text, the answers should be visible.
+        let mut screen = Screen::new(40, 20);
+        let mut conv = ConversationWidget::new();
+
+        // Add padding lines before the question so scrolling is possible.
+        // We need total_height > visible_rows + scroll_offset so the
+        // scroll offset isn't clamped.
+        for i in 0..30 {
+            conv.push(ConversationLine::User {
+                text: format!("Padding {}", i),
+            });
+        }
+        conv.push(ConversationLine::Question {
+            question: "Pick one".to_string(),
+            answers: vec![
+                "Answer A".to_string(),
+                "Answer B".to_string(),
+                "Answer C".to_string(),
+                "Answer D".to_string(),
+                "Answer E".to_string(),
+            ],
+        });
+
+        // Skip past the 30 padding lines + 1 question row = scroll 31
+        conv.scroll_offset = 31;
+        conv.auto_scroll = false;
+
+        let area = Rect::new(0, 0, 40, 5);
+        conv.render(area, &mut screen);
+
+        // After skipping, the first answer's label "    1. " should be visible.
+        let row_text: String = (0..20u16)
+            .map(|c| screen.get(0, c).unwrap().char)
+            .collect();
+        assert!(
+            row_text.contains("1"),
+            "First answer label should be visible after skipping question. Row 0: {:?}",
+            row_text
+        );
+        assert!(
+            row_text.contains("Answer"),
+            "First answer text should be visible. Row 0: {:?}",
+            row_text
         );
     }
 }
