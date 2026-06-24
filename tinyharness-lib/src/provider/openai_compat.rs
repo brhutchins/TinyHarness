@@ -81,13 +81,15 @@ impl OpenAiCompatInner {
         format!(
             "{}/v1/chat/completions",
             self.base_url.trim_end_matches('/')
+                .trim_end_matches("/v1")
         )
     }
 
     /// Fetch the model list from the server's `/v1/models` endpoint.
     /// Returns the list of model IDs, or an empty vec on failure.
     pub fn fetch_model_list(&self) -> Pin<Box<dyn Future<Output = Vec<String>> + Send>> {
-        let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let url = format!("{}/v1/models", self.base_url.trim_end_matches('/')
+            .trim_end_matches("/v1"));
         let client = self.client.clone();
         let current_model = self.model.clone();
         let api_key = self.api_key.clone();
