@@ -7,8 +7,8 @@
 // This module extracts the pure decision logic so both loops share the same
 // branching, and each only needs to implement the I/O part.
 
-use tinyharness_lib::provider::ToolCall;
 use tinyharness_lib::config::AutoAcceptMode;
+use tinyharness_lib::provider::ToolCall;
 
 use super::safety::is_safe_command;
 

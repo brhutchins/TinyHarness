@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use tinyharness_lib::config::{load_settings, save_settings, AutoAcceptMode};
+use tinyharness_lib::config::{AutoAcceptMode, load_settings, save_settings};
 use tinyharness_ui::output::Output;
 
 use crate::async_command;
@@ -156,10 +156,7 @@ pub fn execute_autoaccept(out: &mut Output, arg: Option<&str>) -> Result<Command
             AutoAcceptMode::Safe => ("safe commands", GREEN),
             AutoAcceptMode::Off => ("off", ORANGE),
         };
-        let _ = writeln!(
-            out,
-            "{BOLD}Auto-accept: {color}{mode}{RESET}",
-        );
+        let _ = writeln!(out, "{BOLD}Auto-accept: {color}{mode}{RESET}",);
         return Ok(CommandResult::Ok);
     }
 
@@ -168,7 +165,9 @@ pub fn execute_autoaccept(out: &mut Output, arg: Option<&str>) -> Result<Command
         "safe" | "on" => AutoAcceptMode::Safe,
         "off" | "false" | "no" | "0" => AutoAcceptMode::Off,
         _ => {
-            return Err("Invalid value. Use 'all', 'safe', or 'off', e.g. /autoaccept all".to_string());
+            return Err(
+                "Invalid value. Use 'all', 'safe', or 'off', e.g. /autoaccept all".to_string(),
+            );
         }
     };
 
@@ -181,10 +180,7 @@ pub fn execute_autoaccept(out: &mut Output, arg: Option<&str>) -> Result<Command
         AutoAcceptMode::Safe => ("safe commands", GREEN),
         AutoAcceptMode::Off => ("off", ORANGE),
     };
-    let _ = writeln!(
-        out,
-        "{BOLD}Auto-accept set to {color}{mode_str}{RESET}",
-    );
+    let _ = writeln!(out, "{BOLD}Auto-accept set to {color}{mode_str}{RESET}",);
 
     Ok(CommandResult::Ok)
 }

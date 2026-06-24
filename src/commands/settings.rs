@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 
-use tinyharness_lib::config::{load_settings, AutoAcceptMode};
+use tinyharness_lib::config::{AutoAcceptMode, load_settings};
 use tinyharness_ui::output::Output;
 
 use crate::commands::registry::CommandResult;

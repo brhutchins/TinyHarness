@@ -12,18 +12,13 @@ use crate::mode::AgentMode;
 /// Parsed from string values for JSON config: `"off"`, `"safe"`, `"all"`.
 /// Legacy boolean fields (`auto_accept_all`, `auto_accept_safe_commands`)
 /// are also accepted for backward compatibility during deserialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AutoAcceptMode {
     Off,
+    #[default]
     Safe,
     All,
-}
-
-impl Default for AutoAcceptMode {
-    fn default() -> Self {
-        AutoAcceptMode::Safe
-    }
 }
 
 impl FromStr for AutoAcceptMode {
