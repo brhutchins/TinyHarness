@@ -678,7 +678,7 @@ async fn handle_tui_tool_calls(
     )));
 
     let settings = load_settings();
-    let auto_accept_safe_commands = settings.auto_accept_safe_commands;
+    let auto_accept_mode = settings.auto_accept_mode;
     let safe_commands = settings.get_safe_commands();
     let denied_commands = settings.get_denied_commands();
 
@@ -806,8 +806,7 @@ async fn handle_tui_tool_calls(
         // Use shared decision logic for confirmation
         let decision = super::confirm::decide_tool_confirmation(
             call,
-            *auto_accept,
-            auto_accept_safe_commands,
+            auto_accept_mode,
             &safe_commands,
             &denied_commands,
             needs_confirmation,

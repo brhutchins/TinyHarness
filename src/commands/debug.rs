@@ -431,8 +431,8 @@ fn dump_command_lists(file: &mut std::fs::File) {
 
     writeln!(
         file,
-        "Auto-accept enabled: {}",
-        settings.auto_accept_safe_commands
+        "Auto-accept mode: {}",
+        settings.auto_accept_mode
     )
     .unwrap();
     writeln!(file, "Safe command prefixes ({}):", safe.len()).unwrap();

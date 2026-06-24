@@ -8,6 +8,7 @@
 // branching, and each only needs to implement the I/O part.
 
 use tinyharness_lib::provider::ToolCall;
+use tinyharness_lib::config::AutoAcceptMode;
 
 use super::safety::is_safe_command;
 
@@ -34,17 +35,15 @@ pub enum ConfirmationDecision {
 /// This is pure logic — no I/O. The caller is responsible for implementing
 /// the user interaction when `NeedsConfirmation` is returned.
 ///
-/// The logic follows these rules (matching both CLI and TUI implementations):
+/// The logic follows these rules:
 /// 1. Read-only tools (no confirmation needed) → `AutoApproved { auto_accepted: false }`
-/// 2. Auto-accept mode → `AutoApproved { auto_accepted: true }` for most tools,
+/// 2. Auto-accept mode (Safe) → `AutoApproved { auto_accepted: true }` for most tools,
 ///    but `run` commands that aren't safe still need confirmation
-/// 3. Auto-accept safe commands setting → `AutoApproved { auto_accepted: true }`
-///    for safe `run` commands
+/// 3. Auto-accept mode (All) → `AutoApproved { auto_accepted: true }` for everything
 /// 4. Everything else → `NeedsConfirmation`
 pub fn decide_tool_confirmation(
     call: &ToolCall,
-    auto_accept: bool,
-    auto_accept_safe_commands: bool,
+    auto_accept_mode: AutoAcceptMode,
     safe_commands: &[String],
     denied_commands: &[String],
     needs_confirmation: bool,
@@ -56,39 +55,36 @@ pub fn decide_tool_confirmation(
         };
     }
 
-    // Auto-accept mode: approve most tools, but run commands still need checks
-    if auto_accept {
-        if call.function.name == "run" {
-            if let Some(cmd_value) = call.function.arguments.get("command")
-                && let Some(cmd_str) = cmd_value.as_str()
-                && is_safe_command(cmd_str, safe_commands, denied_commands)
-            {
-                return ConfirmationDecision::AutoApproved {
-                    auto_accepted: true,
-                };
-            }
-            // Unsafe run command — still needs confirmation even in auto-accept mode
-            return ConfirmationDecision::NeedsConfirmation;
-        } else {
-            // Other destructive tools can be auto-accepted
-            return ConfirmationDecision::AutoApproved {
+    match auto_accept_mode {
+        AutoAcceptMode::All => {
+            // Auto-accept all mode: approve everything without prompting
+            ConfirmationDecision::AutoApproved {
                 auto_accepted: true,
-            };
+            }
+        }
+        AutoAcceptMode::Safe => {
+            // Auto-accept safe mode: approve most tools, but run commands need checks
+            if call.function.name == "run" {
+                if let Some(cmd_value) = call.function.arguments.get("command")
+                    && let Some(cmd_str) = cmd_value.as_str()
+                    && is_safe_command(cmd_str, safe_commands, denied_commands)
+                {
+                    return ConfirmationDecision::AutoApproved {
+                        auto_accepted: true,
+                    };
+                }
+                // Unsafe run command — still needs confirmation even in safe auto-accept mode
+                ConfirmationDecision::NeedsConfirmation
+            } else {
+                // Other destructive tools can be auto-accepted
+                ConfirmationDecision::AutoApproved {
+                    auto_accepted: true,
+                }
+            }
+        }
+        AutoAcceptMode::Off => {
+            // Auto-accept off: everything needs confirmation
+            ConfirmationDecision::NeedsConfirmation
         }
     }
-
-    // Auto-accept safe commands setting (for run tool only)
-    if auto_accept_safe_commands
-        && call.function.name == "run"
-        && let Some(cmd_value) = call.function.arguments.get("command")
-        && let Some(cmd_str) = cmd_value.as_str()
-        && is_safe_command(cmd_str, safe_commands, denied_commands)
-    {
-        return ConfirmationDecision::AutoApproved {
-            auto_accepted: true,
-        };
-    }
-
-    // Everything else needs explicit user confirmation
-    ConfirmationDecision::NeedsConfirmation
 }

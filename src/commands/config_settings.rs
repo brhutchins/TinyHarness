@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use tinyharness_lib::config::{load_settings, save_settings};
+use tinyharness_lib::config::{load_settings, save_settings, AutoAcceptMode};
 use tinyharness_ui::output::Output;
 
 use crate::async_command;
@@ -151,37 +151,39 @@ pub fn execute_autoaccept(out: &mut Output, arg: Option<&str>) -> Result<Command
 
     if a.is_empty() {
         let settings = load_settings();
-        let (status, color) = if settings.auto_accept_safe_commands {
-            ("enabled", GREEN)
-        } else {
-            ("disabled", ORANGE)
+        let (mode, color) = match settings.auto_accept_mode {
+            AutoAcceptMode::All => ("all (all tools)", GREEN),
+            AutoAcceptMode::Safe => ("safe commands", GREEN),
+            AutoAcceptMode::Off => ("off", ORANGE),
         };
         let _ = writeln!(
             out,
-            "{BOLD}Auto-accept safe commands: {color}{status}{RESET}",
+            "{BOLD}Auto-accept: {color}{mode}{RESET}",
         );
         return Ok(CommandResult::Ok);
     }
 
-    let new_value = match a.to_lowercase().as_str() {
-        "on" | "true" | "yes" | "1" => true,
-        "off" | "false" | "no" | "0" => false,
+    let mode = match a.to_lowercase().as_str() {
+        "all" | "always" | "true" | "yes" | "1" => AutoAcceptMode::All,
+        "safe" | "on" => AutoAcceptMode::Safe,
+        "off" | "false" | "no" | "0" => AutoAcceptMode::Off,
         _ => {
-            return Err("Invalid value. Use 'on' or 'off', e.g. /autoaccept on".to_string());
+            return Err("Invalid value. Use 'all', 'safe', or 'off', e.g. /autoaccept all".to_string());
         }
     };
 
     let mut settings = load_settings();
-    settings.auto_accept_safe_commands = new_value;
+    settings.auto_accept_mode = mode;
     save_settings(&settings);
-    let (status, color) = if new_value {
-        ("enabled", GREEN)
-    } else {
-        ("disabled", ORANGE)
+
+    let (mode_str, color) = match mode {
+        AutoAcceptMode::All => ("all tools", GREEN),
+        AutoAcceptMode::Safe => ("safe commands", GREEN),
+        AutoAcceptMode::Off => ("off", ORANGE),
     };
     let _ = writeln!(
         out,
-        "{BOLD}Auto-accept safe commands set to {color}{status}{RESET}",
+        "{BOLD}Auto-accept set to {color}{mode_str}{RESET}",
     );
 
     Ok(CommandResult::Ok)
