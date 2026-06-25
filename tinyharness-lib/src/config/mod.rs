@@ -12,13 +12,57 @@ use crate::mode::AgentMode;
 /// Parsed from string values for JSON config: `"off"`, `"safe"`, `"all"`.
 /// Legacy boolean fields (`auto_accept_all`, `auto_accept_safe_commands`)
 /// are also accepted for backward compatibility during deserialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub enum AutoAcceptMode {
     Off,
     #[default]
     Safe,
     All,
+}
+
+impl<'de> Deserialize<'de> for AutoAcceptMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct AutoAcceptModeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for AutoAcceptModeVisitor {
+            type Value = AutoAcceptMode;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter
+                    .write_str("a string (\"off\", \"safe\", \"all\") or a boolean (true/false)")
+            }
+
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(if v {
+                    AutoAcceptMode::All
+                } else {
+                    AutoAcceptMode::Off
+                })
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                AutoAcceptMode::from_str(v).map_err(serde::de::Error::custom)
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                AutoAcceptMode::from_str(&v).map_err(serde::de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_any(AutoAcceptModeVisitor)
+    }
 }
 
 impl FromStr for AutoAcceptMode {
@@ -604,7 +648,33 @@ impl SettingsStore {
             return Ok(Settings::default());
         }
         let content = std::fs::read_to_string(&self.path)?;
-        let settings = serde_json::from_str(&content)?;
+        let mut settings: Settings = serde_json::from_str(&content)?;
+
+        // Legacy field resolution: old configs used `auto_accept_safe_commands: bool`
+        // or `auto_accept_all: bool` instead of `auto_accept_mode`.
+        // If auto_accept_mode was not explicitly set (still default) and legacy
+        // fields are present, resolve the mode from them.
+        if settings.auto_accept_mode == AutoAcceptMode::Safe
+            && let Ok(raw) = serde_json::from_str::<serde_json::Value>(&content)
+            && let Some(obj) = raw.as_object()
+        {
+            // auto_accept_all: true → All, false → Off
+            if let Some(val) = obj.get("auto_accept_all") {
+                if val.as_bool() == Some(true) {
+                    settings.auto_accept_mode = AutoAcceptMode::All;
+                } else if val.as_bool() == Some(false) {
+                    settings.auto_accept_mode = AutoAcceptMode::Off;
+                }
+            }
+            // auto_accept_safe_commands: false → Off (was "don't auto-accept safe cmds")
+            // auto_accept_safe_commands: true → Safe (already default, no change)
+            else if let Some(val) = obj.get("auto_accept_safe_commands")
+                && val.as_bool() == Some(false)
+            {
+                settings.auto_accept_mode = AutoAcceptMode::Off;
+            }
+        }
+
         Ok(settings)
     }
 
@@ -774,8 +844,7 @@ mod tests {
     use super::*;
 
     /// User settings from a future build (with `auto_accept_mode`) must load
-    /// against the current `Settings` struct (which still uses
-    /// `auto_accept_safe_commands`) without parse errors.
+    /// against the current `Settings` struct without parse errors.
     #[test]
     fn load_settings_missing_fields_uses_defaults() {
         let json = r#"{
@@ -811,5 +880,70 @@ mod tests {
         assert_eq!(settings.last_provider, ProviderKind::Ollama);
         assert_eq!(settings.preferred_mode, AgentMode::Casual);
         assert!(!settings.skip_health_check);
+    }
+
+    #[test]
+    fn auto_accept_mode_from_string() {
+        let settings: Settings = serde_json::from_str(r#"{"auto_accept_mode": "all"}"#).unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::All);
+
+        let settings: Settings = serde_json::from_str(r#"{"auto_accept_mode": "off"}"#).unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::Off);
+
+        let settings: Settings = serde_json::from_str(r#"{"auto_accept_mode": "safe"}"#).unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::Safe);
+    }
+
+    #[test]
+    fn auto_accept_mode_from_legacy_bool() {
+        let settings: Settings = serde_json::from_str(r#"{"auto_accept_mode": true}"#).unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::All);
+
+        let settings: Settings = serde_json::from_str(r#"{"auto_accept_mode": false}"#).unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::Off);
+    }
+
+    #[test]
+    fn auto_accept_mode_from_legacy_all_field() {
+        // auto_accept_all: true → All via serde alias
+        let settings: Settings = serde_json::from_str(r#"{"auto_accept_all": true}"#).unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::All);
+
+        let settings: Settings = serde_json::from_str(r#"{"auto_accept_all": false}"#).unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::Off);
+    }
+
+    #[test]
+    fn auto_accept_mode_from_legacy_safe_commands_field() {
+        // auto_accept_safe_commands: false → Off via load() resolution
+        let store = SettingsStore::new(temp_settings_path());
+        let json = r#"{"auto_accept_safe_commands": false}"#;
+        std::fs::write(store.path(), json).unwrap();
+        let settings = store.load().unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::Off);
+        let _ = std::fs::remove_file(store.path());
+
+        // auto_accept_safe_commands: true → Safe (default, no change)
+        let store = SettingsStore::new(temp_settings_path());
+        let json = r#"{"auto_accept_safe_commands": true}"#;
+        std::fs::write(store.path(), json).unwrap();
+        let settings = store.load().unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::Safe);
+        let _ = std::fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn auto_accept_mode_explicit_overrides_legacy() {
+        // Explicit auto_accept_mode string wins over alias
+        let settings: Settings =
+            serde_json::from_str(r#"{"auto_accept_mode": "off", "auto_accept_all": true}"#)
+                .unwrap();
+        assert_eq!(settings.auto_accept_mode, AutoAcceptMode::Off);
+    }
+
+    fn temp_settings_path() -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("tinyharness_test_{}.json", std::process::id()));
+        dir
     }
 }

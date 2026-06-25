@@ -123,6 +123,7 @@ pub async fn handle_tool_calls<W: Write>(
         // Confirmation step using shared decision logic
         let decision = super::confirm::decide_tool_confirmation(
             &call,
+            *auto_accept,
             auto_accept_mode,
             &safe_commands,
             &denied_commands,

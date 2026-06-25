@@ -806,6 +806,7 @@ async fn handle_tui_tool_calls(
         // Use shared decision logic for confirmation
         let decision = super::confirm::decide_tool_confirmation(
             call,
+            *auto_accept,
             auto_accept_mode,
             &safe_commands,
             &denied_commands,

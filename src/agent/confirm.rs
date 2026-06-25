@@ -37,12 +37,14 @@ pub enum ConfirmationDecision {
 ///
 /// The logic follows these rules:
 /// 1. Read-only tools (no confirmation needed) → `AutoApproved { auto_accepted: false }`
-/// 2. Auto-accept mode (Safe) → `AutoApproved { auto_accepted: true }` for most tools,
-///    but `run` commands that aren't safe still need confirmation
-/// 3. Auto-accept mode (All) → `AutoApproved { auto_accepted: true }` for everything
-/// 4. Everything else → `NeedsConfirmation`
+/// 2. Per-turn auto-accept (`auto_accept == true`) → `AutoApproved { auto_accepted: true }`
+///    for everything except unsafe `run` commands (which are denied).
+/// 3. Auto-accept mode (All) → `AutoApproved { auto_accepted: true }` for everything.
+/// 4. Auto-accept mode (Safe) → read-only only; destructive tools need confirmation.
+/// 5. Everything else → `NeedsConfirmation`
 pub fn decide_tool_confirmation(
     call: &ToolCall,
+    auto_accept: bool,
     auto_accept_mode: AutoAcceptMode,
     safe_commands: &[String],
     denied_commands: &[String],
@@ -55,6 +57,22 @@ pub fn decide_tool_confirmation(
         };
     }
 
+    // Per-turn auto-accept ('a' key): approve destructive tools for the rest
+    // of this turn, but still deny unsafe `run` commands.
+    if auto_accept {
+        if call.function.name == "run" {
+            if let Some(cmd_value) = call.function.arguments.get("command")
+                && let Some(cmd_str) = cmd_value.as_str()
+                && !is_safe_command(cmd_str, safe_commands, denied_commands)
+            {
+                return ConfirmationDecision::Denied;
+            }
+        }
+        return ConfirmationDecision::AutoApproved {
+            auto_accepted: true,
+        };
+    }
+
     match auto_accept_mode {
         AutoAcceptMode::All => {
             // Auto-accept all mode: approve everything without prompting
@@ -63,28 +81,136 @@ pub fn decide_tool_confirmation(
             }
         }
         AutoAcceptMode::Safe => {
-            // Auto-accept safe mode: approve most tools, but run commands need checks
-            if call.function.name == "run" {
-                if let Some(cmd_value) = call.function.arguments.get("command")
-                    && let Some(cmd_str) = cmd_value.as_str()
-                    && is_safe_command(cmd_str, safe_commands, denied_commands)
-                {
-                    return ConfirmationDecision::AutoApproved {
-                        auto_accepted: true,
-                    };
-                }
-                // Unsafe run command — still needs confirmation even in safe auto-accept mode
-                ConfirmationDecision::NeedsConfirmation
-            } else {
-                // Other destructive tools can be auto-accepted
-                ConfirmationDecision::AutoApproved {
-                    auto_accepted: true,
-                }
-            }
-        }
-        AutoAcceptMode::Off => {
-            // Auto-accept off: everything needs confirmation
+            // Safe mode: only auto-approve read-only tools (handled above).
+            // Destructive tools need explicit user confirmation.
             ConfirmationDecision::NeedsConfirmation
         }
+        AutoAcceptMode::Off => {
+            // Auto-accept off: always prompt for destructive tools
+            ConfirmationDecision::NeedsConfirmation
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_call(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: Some("test-id".to_string()),
+            function: tinyharness_lib::provider::ToolCallFunction {
+                name: name.to_string(),
+                arguments: args,
+                thought_signature: None,
+            },
+        }
+    }
+
+    #[test]
+    fn read_only_always_approved() {
+        let call = make_call("read", json!({"path": "/tmp/file"}));
+        let decision = decide_tool_confirmation(
+            &call,
+            false,
+            AutoAcceptMode::Off,
+            &[],
+            &[],
+            false, // needs_confirmation = false → read-only
+        );
+        assert_eq!(
+            decision,
+            ConfirmationDecision::AutoApproved {
+                auto_accepted: false
+            }
+        );
+    }
+
+    #[test]
+    fn safe_mode_prompts_for_destructive() {
+        let call = make_call("write", json!({"path": "/tmp/file", "content": "hi"}));
+        let decision = decide_tool_confirmation(
+            &call,
+            false,
+            AutoAcceptMode::Safe,
+            &[],
+            &[],
+            true, // needs_confirmation = true → destructive
+        );
+        assert_eq!(decision, ConfirmationDecision::NeedsConfirmation);
+    }
+
+    #[test]
+    fn all_mode_auto_approves_destructive() {
+        let call = make_call("write", json!({"path": "/tmp/file", "content": "hi"}));
+        let decision = decide_tool_confirmation(&call, false, AutoAcceptMode::All, &[], &[], true);
+        assert_eq!(
+            decision,
+            ConfirmationDecision::AutoApproved {
+                auto_accepted: true
+            }
+        );
+    }
+
+    #[test]
+    fn per_turn_auto_accept_overrides() {
+        let call = make_call("write", json!({"path": "/tmp/file", "content": "hi"}));
+        let decision = decide_tool_confirmation(
+            &call,
+            true,                // auto_accept = true
+            AutoAcceptMode::Off, // mode is Off, but per-turn overrides
+            &[],
+            &[],
+            true,
+        );
+        assert_eq!(
+            decision,
+            ConfirmationDecision::AutoApproved {
+                auto_accepted: true
+            }
+        );
+    }
+
+    #[test]
+    fn per_turn_auto_accept_denies_unsafe_run() {
+        let call = make_call("run", json!({"command": "rm -rf /"}));
+        let safe_commands = tinyharness_lib::config::get_default_safe_commands();
+        let decision = decide_tool_confirmation(
+            &call,
+            true, // auto_accept = true
+            AutoAcceptMode::Off,
+            &safe_commands,
+            &[],
+            true,
+        );
+        assert_eq!(decision, ConfirmationDecision::Denied);
+    }
+
+    #[test]
+    fn per_turn_auto_accept_approves_safe_run() {
+        let call = make_call("run", json!({"command": "ls -la"}));
+        let safe_commands = tinyharness_lib::config::get_default_safe_commands();
+        let decision = decide_tool_confirmation(
+            &call,
+            true, // auto_accept = true
+            AutoAcceptMode::Off,
+            &safe_commands,
+            &[],
+            true,
+        );
+        assert_eq!(
+            decision,
+            ConfirmationDecision::AutoApproved {
+                auto_accepted: true
+            }
+        );
+    }
+
+    #[test]
+    fn off_mode_always_prompts() {
+        let call = make_call("write", json!({"path": "/tmp/file", "content": "hi"}));
+        let decision = decide_tool_confirmation(&call, false, AutoAcceptMode::Off, &[], &[], true);
+        assert_eq!(decision, ConfirmationDecision::NeedsConfirmation);
     }
 }
