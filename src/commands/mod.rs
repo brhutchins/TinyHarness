@@ -131,8 +131,8 @@ pub fn build_registry() -> CommandRegistry {
 
     reg.register_sync_with_usage(
         "/autoaccept",
-        "Show or toggle auto-accept for safe read-only commands (default: on)",
-        "/autoaccept [on|off]",
+        "Show or toggle auto-accept mode: 'all' (all tools), 'safe' (read-only), or 'off'",
+        "/autoaccept [all|safe|off]",
         |arg, ctx, _msg| crate::commands::config_settings::execute_autoaccept(&mut ctx.output, arg),
     );
 
@@ -433,7 +433,7 @@ pub fn build_registry() -> CommandRegistry {
     reg.register_subcommands("/session", vec!["delete"]);
     reg.register_subcommands("/mode", vec!["agent", "casual", "planning", "research"]);
     reg.register_subcommands("/settings", vec!["all"]);
-    reg.register_subcommands("/autoaccept", vec!["off", "on"]);
+    reg.register_subcommands("/autoaccept", vec!["off", "safe", "all"]);
     reg.register_subcommands("/apikey", vec!["clear"]);
     reg.register_subcommands("/showthink", vec!["off", "on"]);
     reg.register_subcommands("/think", vec!["high", "low", "medium", "off"]);

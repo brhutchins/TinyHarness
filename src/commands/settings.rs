@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 
-use tinyharness_lib::config::load_settings;
+use tinyharness_lib::config::{AutoAcceptMode, load_settings};
 use tinyharness_ui::output::Output;
 
 use crate::commands::registry::CommandResult;
@@ -83,14 +83,14 @@ fn execute_summary(out: &mut Output, settings: &tinyharness_lib::config::Setting
         }
     }
 
-    let (auto_accept_str, auto_accept_color) = if settings.auto_accept_safe_commands {
-        ("enabled", GREEN)
-    } else {
-        ("disabled", ORANGE)
+    let (auto_accept_str, auto_accept_color) = match settings.auto_accept_mode {
+        AutoAcceptMode::All => ("ALL", GREEN),
+        AutoAcceptMode::Safe => ("safe commands", GREEN),
+        AutoAcceptMode::Off => ("off", ORANGE),
     };
     let _ = writeln!(
         out,
-        "{BOLD}│{RESET} Auto-Accept: {auto_accept_color}{auto_accept_str}{RESET} (safe commands)",
+        "{BOLD}│{RESET} Auto-Accept: {auto_accept_color}{auto_accept_str}{RESET}",
     );
 
     let safe_commands = settings.get_safe_commands();

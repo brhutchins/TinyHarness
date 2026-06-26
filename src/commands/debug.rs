@@ -429,12 +429,7 @@ fn dump_command_lists(file: &mut std::fs::File) {
         .unwrap_or_else(get_default_safe_commands);
     let denied: Vec<String> = settings.denied_command_prefixes.clone().unwrap_or_default();
 
-    writeln!(
-        file,
-        "Auto-accept enabled: {}",
-        settings.auto_accept_safe_commands
-    )
-    .unwrap();
+    writeln!(file, "Auto-accept mode: {}", settings.auto_accept_mode).unwrap();
     writeln!(file, "Safe command prefixes ({}):", safe.len()).unwrap();
     for cmd in &safe {
         writeln!(file, "  - {}", cmd).unwrap();

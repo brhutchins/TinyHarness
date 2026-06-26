@@ -6,7 +6,7 @@
 use std::io::Write;
 
 use tinyharness_lib::config::{
-    SettingSource, discover_project_settings, load_merged_settings, load_settings,
+    AutoAcceptMode, SettingSource, discover_project_settings, load_merged_settings, load_settings,
 };
 use tinyharness_ui::output::Output;
 use tinyharness_ui::style::*;
@@ -56,12 +56,12 @@ fn execute_show(out: &mut Output) {
     let _ = writeln!(out, "{BOLD}│{RESET} Mode:      {mode_str} {mode_src}");
 
     // ── Auto-accept ──
-    let aa_val = if merged.auto_accept_safe_commands {
-        "enabled"
-    } else {
-        "disabled"
+    let aa_val = match merged.auto_accept_mode {
+        AutoAcceptMode::All => "all",
+        AutoAcceptMode::Safe => "safe",
+        AutoAcceptMode::Off => "off",
     };
-    let (aa_str, aa_src) = format_setting(aa_val, merged.auto_accept_source, None);
+    let (aa_str, aa_src) = format_setting(aa_val, merged.auto_accept_mode_source, None);
     let _ = writeln!(out, "{BOLD}│{RESET} Auto-Accept: {aa_str} {aa_src}");
 
     // ── Context limit ──
@@ -181,7 +181,8 @@ fn execute_init(out: &mut Output) {
   // "denied_command_prefixes": ["git push --force"],
 
   // Whether to auto-accept safe read-only commands.
-  "auto_accept_safe_commands": true,
+  // Values: "off", "safe" (default), "all" (dangerous)
+  "auto_accept_mode": "safe",
 
   // Context limit in tokens. Set to null for model default.
   // "context_limit": null,

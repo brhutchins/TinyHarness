@@ -114,9 +114,9 @@ pub async fn handle_tool_calls<W: Write>(
 
         let needs_confirmation = tool_manager.needs_approval(&call.function.name);
 
-        // Load settings to check auto_accept_safe_commands preference and safe/denied commands
+        // Load settings to check auto_accept_mode preference and safe/denied commands
         let settings = load_settings();
-        let auto_accept_safe_commands = settings.auto_accept_safe_commands;
+        let auto_accept_mode = settings.auto_accept_mode;
         let safe_commands = settings.get_safe_commands();
         let denied_commands = settings.get_denied_commands();
 
@@ -124,7 +124,7 @@ pub async fn handle_tool_calls<W: Write>(
         let decision = super::confirm::decide_tool_confirmation(
             &call,
             *auto_accept,
-            auto_accept_safe_commands,
+            auto_accept_mode,
             &safe_commands,
             &denied_commands,
             needs_confirmation,
