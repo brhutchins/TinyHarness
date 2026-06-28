@@ -786,14 +786,16 @@ impl SettingsStore {
 
 /// Load settings from the default path, returning defaults on any error.
 ///
-/// This is a convenience wrapper around [`SettingsStore::default_path().load_or_default()`].
+/// This is a convenience wrapper around
+/// [`SettingsStore::default_path`] followed by [`SettingsStore::load_or_default`].
 pub fn load_settings() -> Settings {
     SettingsStore::default_path().load_or_default()
 }
 
 /// Save settings to the default path atomically.
 ///
-/// This is a convenience wrapper around [`SettingsStore::default_path().save()`].
+/// This is a convenience wrapper around
+/// [`SettingsStore::default_path`] followed by [`SettingsStore::save`].
 /// On error, prints a warning to stderr (matching the original behaviour).
 pub fn save_settings(settings: &Settings) {
     let store = SettingsStore::default_path();
@@ -1073,8 +1075,10 @@ mod tests {
 
     #[test]
     fn get_current_model_and_url_use_last_provider() {
-        let mut settings = Settings::default();
-        settings.last_provider = ProviderKind::OpenAiCompat;
+        let mut settings = Settings {
+            last_provider: ProviderKind::OpenAiCompat,
+            ..Settings::default()
+        };
         settings.set_model_for(ProviderKind::OpenAiCompat, "gpt-4o".to_string());
         settings.set_url_for(
             ProviderKind::OpenAiCompat,

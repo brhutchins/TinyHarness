@@ -116,7 +116,7 @@ fn resolve_provider_kind(args: &Args, settings: &Settings) -> ProviderKind {
     }
 }
 
-/// Create the provider backend, run health checks, and return it wrapped in Arc<Mutex>.
+/// Create the provider backend, run health checks, and return it wrapped in `Arc<Mutex>`.
 #[allow(clippy::too_many_arguments)]
 async fn create_provider(
     kind: ProviderKind,
