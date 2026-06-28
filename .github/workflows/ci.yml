@@ -76,7 +76,9 @@ jobs:
         id: msrv
         shell: bash
         run: |
+          set +e
           msrv=$(grep -E '^rust-version' Cargo.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          set -e
           if [ -z "$msrv" ]; then
             echo "No rust-version set in Cargo.toml; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
